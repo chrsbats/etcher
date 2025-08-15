@@ -25,6 +25,9 @@ They support nested graphs, automatic garbage collection (including cycles), sim
 - Python 3.8+
 - From this repo:
   - pip install -e .
+- Optional extras:
+  - pip install 'etcher[redislite]'
+  - pip install 'etcher[redis]'
 
 ## Quick start (SQLite backend, default)
 ```python
@@ -96,12 +99,12 @@ t.transact(txn)
 - SQLite (default, recommended for “one app + worker” on one machine)
   - WAL mode, synchronous=NORMAL, busy_timeout, mmap enabled for performance.
   - Create with DB("state.db", prefix="app").
-- Embedded Redis via redislite
+- Embedded Redis via redislite (pip install 'etcher[redislite]')
 ```python
 from redislite import Redis as RLRedis
 db = DB("redislite.rdb", prefix="app", redis_adapter=RLRedis)
 ```
-- Real Redis server
+- Real Redis server (pip install 'etcher[redis]')
 ```python
 import redis
 r = redis.Redis(host="localhost", port=6379)

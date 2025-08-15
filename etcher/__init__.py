@@ -1,1 +1,2 @@
-from .db import DB, DBConnections, WatchError, db_connections, RD, RL, list_db
+from .exceptions import WatchError
+from .db import DB, DBConnections, db_connections, RD, RL, list_db

@@ -3,9 +3,16 @@ import tempfile
 import shutil
 import unittest
 
-from redislite import Redis as RLRedis
+try:
+    from redislite import Redis as RLRedis
+    HAVE_REDISLITE = True
+except Exception:
+    RLRedis = None
+    HAVE_REDISLITE = False
+
 from etcher.sqlitedis import Redis as SQLRedis
-from redis.exceptions import WatchError
+
+from etcher.exceptions import WatchError
 
 
 def snapshot_state(r):
@@ -41,6 +48,7 @@ def clear_db(r):
         r.delete(*ks)
 
 
+@unittest.skipUnless(HAVE_REDISLITE, "redislite not installed")
 class TestSqliteDisParity(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

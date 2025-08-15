@@ -1,7 +1,6 @@
-from inspect import getsourcefile
-from pathlib import Path, PurePath
+from pathlib import Path
 
-path = Path.absolute(PurePath(getsourcefile(lambda: 0)).parent)
+path = Path(__file__).parent.resolve()
 import unittest
 from etcher.db import DB, DBConnections, WatchError, list_db
 from ulid import ULID

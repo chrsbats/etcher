@@ -17,7 +17,7 @@ import threading
 from fnmatch import fnmatch
 from typing import Iterable, Iterator, Dict, Tuple, Optional, Any, List, Union
 
-from redis.exceptions import WatchError
+from .exceptions import WatchError
 
 
 Bytes = bytes

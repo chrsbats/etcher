@@ -1,6 +1,5 @@
-from inspect import getsourcefile
-from pathlib import Path, PurePath
-path = Path.absolute(PurePath(getsourcefile(lambda: 0)).parent)
+from pathlib import Path
+path = Path(__file__).parent.resolve()
 from ulid import ULID
 import warnings
 import os
@@ -8,7 +7,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module="redislite
 
 isa = isinstance
    
-from redis import WatchError, ResponseError
+from .exceptions import WatchError
 
 sym = '@'
 

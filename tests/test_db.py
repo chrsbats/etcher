@@ -3,7 +3,7 @@ from pathlib import Path, PurePath
 
 path = Path.absolute(PurePath(getsourcefile(lambda: 0)).parent)
 import unittest
-from ..db import DB, DBConnections, WatchError, list_db
+from etcher.db import DB, DBConnections, WatchError, list_db
 from ulid import ULID
 
 import shutil, tempfile
@@ -139,11 +139,9 @@ class Test(unittest.TestCase):
     
     def test_basic_dereference(self):
         keys = [x.decode('utf8') for x in self.db.rdb.keys()]
-        print('start',keys)
         assert len(keys) == 1
         self.db['x'] = {'name': 'bob'}
         keys = [x.decode('utf8') for x in self.db.rdb.keys()]
-        print('set x to dict',keys)
         assert len(keys) == 4
         # overwrite
         self.db['x'] = [1, 2, 3]
@@ -201,7 +199,6 @@ class Test(unittest.TestCase):
         assert self.db['y']() == [1, 2, {'name': 'alice'}, {'name': 'alice'}]
 
         z = self.db['y']()[:2]
-        print('z',z)
         self.db['y'] = z
         assert len(self.db.rdb.keys()) == 4
         assert self.db['y']() == [1, 2]
@@ -287,7 +284,6 @@ class Test(unittest.TestCase):
     def test_circular_reference(self):
         # Create a circular reference
         assert len(self.db.rdb.keys()) == 1
-        pprint(list_db(self.db))
         x = self.db()
         assert x == {}
 
@@ -301,7 +297,6 @@ class Test(unittest.TestCase):
         assert self.db['b'].refcount == 2
         
         x = self.db()
-        print(x)
         #pprint(list_db(self.db))
         
         # The keys in the database should increase to account for 'a' and 'b' and their reference counts
@@ -594,15 +589,7 @@ class Test(unittest.TestCase):
                     person['action'] = None
                     #assert self.db.pipe.get(oldref) is None
                     
-        print('**start')
-        pprint(list_db(self.db))        
         action_id = add_action(person,create_action())
-        print('**added')
-        pprint(list_db(self.db))        
         modify_action(person,action_id)
-        print('**modified')
-        pprint(list_db(self.db))        
         pop_action(person)
-        print('**popped')
-        pprint(list_db(self.db))        
        

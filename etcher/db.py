@@ -3,13 +3,10 @@ from pathlib import Path, PurePath
 path = Path.absolute(PurePath(getsourcefile(lambda: 0)).parent)
 from ulid import ULID
 import warnings
+import os
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="redislite")
-from redislite import Redis
 
 isa = isinstance
-
-class DBFileRedis(Redis):
-    pass
    
 from redis import WatchError, ResponseError
 
@@ -249,28 +246,47 @@ def list_db(db):
 import threading 
 
 class DBConnections:
-
-    connections = defaultdict(lambda: None)
-
-    def connect(self, fname) -> Redis:
-        fname = str(fname)
-
+    def __init__(self):
+        self.connections = {}
         self.lock = threading.RLock()
+
+    def connect(self, fname, adapter_cls=None, **kwargs):
+        fname = str(fname)
+        if adapter_cls is None:
+            from etcher.sqlitedis import Redis as DefaultRedis
+            adapter_cls = DefaultRedis
+        key = (adapter_cls, fname)
         with self.lock:
-            if not self.connections[fname]:          
-                self.connections[fname] = DBFileRedis(fname)
-        return self.connections[fname]
+            inst = self.connections.get(key)
+            if inst is None:
+                try:
+                    inst = adapter_cls(fname, **kwargs)
+                except TypeError:
+                    # Fallback for adapters that don't take a filename
+                    inst = adapter_cls(**kwargs)
+                self.connections[key] = inst
+            return inst
 
 db_connections = DBConnections()
 
 
 class DB:
-    def __init__(self, db_path=None, prefix=None, link_field='', new_prefix=False):
+    def __init__(self, db_path=None, prefix=None, link_field='', new_prefix=False, redis=None, redis_adapter=None, redis_kwargs=None):
         if db_path is None:
             db_path = path / 'redis.db'
         self.path = db_path
-        self.rdb = db_connections.connect(str(db_path))
-        self.pubsub = self.rdb.pubsub(ignore_subscribe_messages=True)
+
+        # Resolve backend: explicit instance > adapter class > env var > default (redislite)
+        if redis is not None:
+            self.rdb = redis
+        else:
+            adapter_cls = redis_adapter
+            if adapter_cls is None:
+                from etcher.sqlitedis import Redis
+                adapter_cls = Redis
+            self.rdb = db_connections.connect(str(db_path), adapter_cls=adapter_cls, **(redis_kwargs or {}))
+
+
         self.pipe = self.rdb
         self.data = None
         if prefix is not None:
@@ -422,7 +438,10 @@ class DB:
         return deleted_in_call > 0
 
     def shutdown(self):
-        self.pipe.shutdown()
+        try:
+            self.pipe.shutdown()
+        except Exception:
+            pass
 
     def new_prefix(self):
         x = self.pipe.incr(':dbs:')

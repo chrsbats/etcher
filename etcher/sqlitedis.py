@@ -41,12 +41,12 @@ def _s(key: KeyT) -> str:
 
 
 class Redis:
-    def __init__(self, filename: str):
+    def __init__(self, filename: str, *, busy_timeout_ms: int = 5000):
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(filename, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.execute("PRAGMA busy_timeout=5000")
+        self._conn.execute(f"PRAGMA busy_timeout={int(busy_timeout_ms)}")
         self._conn.execute("PRAGMA temp_store=MEMORY")
         self._conn.execute("PRAGMA foreign_keys=OFF")
         self._conn.execute("PRAGMA mmap_size=268435456")  # 256MB
@@ -384,6 +384,67 @@ class Redis:
     # --- pipeline/transactions ---
     def pipeline(self) -> "Pipeline":
         return Pipeline(self)
+
+    # --- optional maintenance ---
+    def maintenance(self):
+        """
+        Optionally clean up the SQLite DB:
+        - checkpoint/truncate WAL
+        - VACUUM when freelist fragmentation is significant
+        - PRAGMA optimize
+
+        If nothing needs doing, effectively a no-op. Safe to call repeatedly.
+        """
+        with self._lock:
+            # Try to checkpoint/truncate WAL (cheap no-op if nothing to do or not in WAL)
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass
+
+            # Heuristic to decide VACUUM:
+            # - if freelist is >= 1024 pages OR >= 20% of total pages
+            fl = pc = 0
+            try:
+                row = self._conn.execute("PRAGMA freelist_count").fetchone()
+                if row: fl = int(row[0])
+            except Exception:
+                fl = 0
+            try:
+                row = self._conn.execute("PRAGMA page_count").fetchone()
+                if row: pc = int(row[0])
+            except Exception:
+                pc = 0
+
+            do_vacuum = (pc > 0 and (fl >= 1024 or (fl / pc) >= 0.20))
+            if do_vacuum:
+                try:
+                    # Ensure no open transaction; execute VACUUM in autocommit mode
+                    self._conn.commit()
+                except Exception:
+                    pass
+                try:
+                    self._conn.execute("VACUUM")
+                except Exception:
+                    # Ignore if VACUUM cannot run (e.g., disk full, busy, etc.)
+                    pass
+
+            # Let SQLite tune internal structures; usually a no-op if not needed
+            try:
+                self._conn.execute("PRAGMA optimize")
+            except Exception:
+                pass
+
+    async def maintenance_async(self):
+        """
+        Async coroutine version of maintenance.
+
+        This does not create threads or schedule background work.
+        It simply runs maintenance() when awaited. If you want to run it
+        in the background, schedule it yourself (e.g. with asyncio.create_task
+        or an external scheduler/cron).
+        """
+        return self.maintenance()
 
     # --- shutdown ---
     def shutdown(self):

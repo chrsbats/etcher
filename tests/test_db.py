@@ -9,6 +9,9 @@ import shutil, tempfile
 from pprint import pprint
 import time
 
+def visible_keys(rdb):
+    return [k for k in (x.decode('utf8') for x in rdb.keys()) if not k.startswith(':')]
+
 class Test(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -19,12 +22,8 @@ class Test(unittest.TestCase):
 
 
     def setUp(self):
-        # Set up temp db for each test.
         pass
-        # name = 'test_' + str(ULID()) + '.db'
-        # self.dbfname = str(self.test_dir + '/' + name)
-        # self.db = DB(self.dbfname, 'db', link_field='id')
-
+    
     def tearDown(self):
         prefix = self.db.get_prefix()
         self.db.delete_prefix_immediately(prefix)
@@ -37,18 +36,18 @@ class Test(unittest.TestCase):
         shutil.rmtree(cls.test_dir)
 
     def test_set(self):
-        keys = [x.decode('utf8') for x in self.db.rdb.keys()]
+        keys = visible_keys(self.db.rdb)
         assert keys == ['back:db:data:']
         assert self.db.backrefs == {':root:': 1}
         assert ':root:' in self.db.backrefs
         self.db['x'] = {'a':2}
         assert self.db['x'].backrefs == {'db:data:': 1}
         assert 'db:data:' in self.db['x'].backrefs
-        keys = [x.decode('utf8') for x in self.db.rdb.keys()]
+        keys = visible_keys(self.db.rdb)
         assert len(keys) == 4
         xuid = self.db['x'].uid
         self.db['x']['y'] = {1:2}
-        keys = [x.decode('utf8') for x in self.db.rdb.keys()]
+        keys = visible_keys(self.db.rdb)
         assert len(keys) == 6   
         assert xuid in self.db['x']['y'].backrefs
         assert self.db['x']['y'].backrefs[xuid] == 1
@@ -88,7 +87,7 @@ class Test(unittest.TestCase):
         self.db['x'] = {'name': 'bob'}
         assert self.db['x']() == {'name': 'bob'}
         assert str(self.db['x']) == "@{'name': 'bob'}"
-        keys = [x.decode('utf8') for x in self.db.rdb.keys()]
+        keys = visible_keys(self.db.rdb)
         assert len(keys) == 4
         assert 'x' in self.db
         found_rc = False
@@ -105,7 +104,7 @@ class Test(unittest.TestCase):
         self.db['x'] = {'name': None, 'x': True, 'y': False}
         assert self.db['x']() == {'name': None, 'x': True, 'y': False}
         assert str(self.db['x']) == "@{'name': None, 'x': True, 'y': False}"
-        keys = [x.decode('utf8') for x in self.db.rdb.keys()]
+        keys = visible_keys(self.db.rdb)
         assert len(keys) == 4
         assert 'x' in self.db
         found_rc = False
@@ -122,7 +121,7 @@ class Test(unittest.TestCase):
         self.db['x'] = [1, 2, 3]
         assert self.db['x']() == [1, 2, 3]
         assert str(self.db['x']) == "@[1, 2, 3]"
-        keys = [x.decode('utf8') for x in self.db.rdb.keys()]
+        keys = visible_keys(self.db.rdb)
         assert len(keys) == 4
         assert 'x' in self.db
         found_rc = False
@@ -137,16 +136,16 @@ class Test(unittest.TestCase):
 
     
     def test_basic_dereference(self):
-        keys = [x.decode('utf8') for x in self.db.rdb.keys()]
+        keys = visible_keys(self.db.rdb)
         assert len(keys) == 1
         self.db['x'] = {'name': 'bob'}
-        keys = [x.decode('utf8') for x in self.db.rdb.keys()]
+        keys = visible_keys(self.db.rdb)
         assert len(keys) == 4
         # overwrite
         self.db['x'] = [1, 2, 3]
         assert self.db['x']() == [1, 2, 3]
         assert str(self.db['x']) == "@[1, 2, 3]"
-        keys = [x.decode('utf8') for x in self.db.rdb.keys()]
+        keys = visible_keys(self.db.rdb)
         assert len(keys) == 4
         assert 'x' in self.db
         found_lrc = False
@@ -169,64 +168,64 @@ class Test(unittest.TestCase):
 
 
     def test_complicated_dereference(self):
-        assert len(self.db.rdb.keys()) == 1
+        assert len(visible_keys(self.db.rdb)) == 1
         self.db['x'] = {'name': 'bob'}
-        assert len(self.db.rdb.keys()) == 4
+        assert len(visible_keys(self.db.rdb)) == 4
         x = self.db['x']
 
         self.db['y'] = [1, 2, x, x]
 
         assert self.db['x'].refcount == 2
         assert self.db['y'].refcount == 1
-        assert len(self.db.rdb.keys()) == 6
+        assert len(visible_keys(self.db.rdb)) == 6
         assert self.db['x']() == {'name': 'bob'}
         assert self.db['y']() == [1, 2, {'name': 'bob'}, {'name': 'bob'}]
-        assert len(self.db.rdb.keys()) == 6
+        assert len(visible_keys(self.db.rdb)) == 6
         assert self.db['x'].refcount == 2
         assert self.db['y'].refcount == 1
 
         x['name'] = 'alice'
         assert self.db['x']() == {'name': 'alice'}
         assert self.db['y']() == [1, 2, {'name': 'alice'}, {'name': 'alice'}]
-        assert len(self.db.rdb.keys()) == 6
+        assert len(visible_keys(self.db.rdb)) == 6
 
         del self.db['x']
         assert 'x' not in self.db
         assert self.db['y'][2].refcount == 1
 
-        assert len(self.db.rdb.keys()) == 6
+        assert len(visible_keys(self.db.rdb)) == 6
         assert self.db['y']() == [1, 2, {'name': 'alice'}, {'name': 'alice'}]
 
         z = self.db['y']()[:2]
         self.db['y'] = z
-        assert len(self.db.rdb.keys()) == 4
+        assert len(visible_keys(self.db.rdb)) == 4
         assert self.db['y']() == [1, 2]
 
         del self.db['y']
         assert 'y' not in self.db
-        assert len(self.db.rdb.keys()) == 1
+        assert len(visible_keys(self.db.rdb)) == 1
 
     def test_multiple_reference(self):
-        assert len(self.db.rdb.keys()) == 1
+        assert len(visible_keys(self.db.rdb)) == 1
         self.db['x'] = {'name': 'bob'}
-        assert len(self.db.rdb.keys()) == 4
+        assert len(visible_keys(self.db.rdb)) == 4
         x = self.db['x']
         self.db['y'] = [x, x]
         assert self.db['x'].refcount == 2
         assert self.db['y'].refcount == 1
-        assert len(self.db.rdb.keys()) == 6
+        assert len(visible_keys(self.db.rdb)) == 6
         self.db['y'][1] = 1
         del self.db['x']
         assert self.db['y'][0] == x 
         assert self.db['y'][0]() == {'name': 'bob'}
         assert self.db['y'][0].refcount == 1
         assert self.db['y'].refcount == 1
-        assert len(self.db.rdb.keys()) == 6
+        assert len(visible_keys(self.db.rdb)) == 6
         self.db['y'][0] = 1
-        assert len(self.db.rdb.keys()) == 4
+        assert len(visible_keys(self.db.rdb)) == 4
         del self.db['y']
         assert 'y' not in self.db
-        assert len(self.db.rdb.keys()) == 1
+        assert len(visible_keys(self.db.rdb)) == 1
 
 
     def test_list_slice(self):
@@ -282,7 +281,7 @@ class Test(unittest.TestCase):
 
     def test_circular_reference(self):
         # Create a circular reference
-        assert len(self.db.rdb.keys()) == 1
+        assert len(visible_keys(self.db.rdb)) == 1
         x = self.db()
         assert x == {}
 
@@ -299,7 +298,7 @@ class Test(unittest.TestCase):
         #pprint(list_db(self.db))
         
         # The keys in the database should increase to account for 'a' and 'b' and their reference counts
-        assert len(self.db.rdb.keys()) == 6  # Adjust this based on your implementation
+        assert len(visible_keys(self.db.rdb)) == 6  # Adjust this based on your implementation
 
         # Delete one of the circular references
         del self.db['a']
@@ -318,11 +317,11 @@ class Test(unittest.TestCase):
         x = self.db()
         assert x == {}
 
-        assert len(self.db.rdb.keys()) == 1 
+        assert len(visible_keys(self.db.rdb)) == 1 
 
     def test_shared_nested_objects_with_non_simultaneous_deletion(self):
         # Create a shared nested object
-        assert len(self.db.rdb.keys()) == 1
+        assert len(visible_keys(self.db.rdb)) == 1
         self.db['C'] = {'shared_key': 'shared_value'}
         nested_dict = self.db['C']
         self.db['A'] = {'nested': nested_dict}
@@ -330,20 +329,20 @@ class Test(unittest.TestCase):
         # Verify both A and B have the shared nested object
         self.assertEqual(self.db['A']()['nested'], nested_dict)
         self.assertEqual(self.db['B']()['nested'], nested_dict)
-        assert len(self.db.rdb.keys()) == 8
+        assert len(visible_keys(self.db.rdb)) == 8
         # Delete A and check if the nested object is still accessible through B
         del self.db['A']
         self.assertNotIn('A', self.db)
         self.assertIn('B', self.db)
         self.assertEqual(self.db['B']()['nested'], nested_dict)
-        assert len(self.db.rdb.keys()) == 6
+        assert len(visible_keys(self.db.rdb)) == 6
         # Delete B and verify that the nested object is also dereferenced
         del self.db['B']
         self.assertNotIn('B', self.db)
-        assert len(self.db.rdb.keys()) == 4
+        assert len(visible_keys(self.db.rdb)) == 4
         del self.db['C']
         self.assertNotIn('C', self.db)
-        assert len(self.db.rdb.keys()) == 1
+        assert len(visible_keys(self.db.rdb)) == 1
 
     def test_dict_deletion(self):
         # Create a shared nested object

@@ -1,139 +1,212 @@
 # Etcher
 
-Persistent, reference-counted Python containers backed by a Redis-like key/value store.
+Persistent Python dict/list containers that behave like plain JSON‑ish data. No server, no schema. Put your structures in; read them back.
 
-## Why use this?
-- You want your Python app’s state to persist across restarts without running a separate database server.
-- You just run Python and get a persistent dictionary/list that stores JSON-style data (strings, numbers, booleans, None, dicts, lists).
-- Start simple with a single file on disk; swap backends later without changing your app logic.
-
-Etcher gives you two containers:
-- RD: a dict-like object persisted in a backend store
-- RL: a list-like object persisted in a backend store
-
-They support nested graphs, automatic garbage collection (including cycles), simple transactions, and cross‑process usage. Default backend is SQLite (fast, durable, zero external services). You can swap to embedded redislite or a real Redis server without changing your RD/RL code.
-
-### Highlights
-- Dict/list semantics: get/set/del, iteration, slicing, etc.
-- Persistent nested graphs: store references, not deep copies.
-- Automatic cleanup (including cycles): Etcher tracks backreferences and, on unlink, checks reachability from the root. Subgraphs no longer reachable are reclaimed recursively. This avoids leaks that plain refcounting would miss, even with cycles.
-- Transactions (optional): optimistic transactions with auto‑retry.
-- Cross-process friendly: safe with one writer at a time on SQLite (WAL).
-- Pluggable backends: SQLite (default), redislite, or real Redis.
+- Store JSON-style Python data: strings, numbers, booleans, None, dict, list
+- Nested structures are stored by reference (no deep copies)
+- Durable on-disk storage (SQLite by default)
+- Use an optional Redis compatible backend without changing your code
 
 ## Install
-- Python 3.8+
+
 - From this repo:
   - pip install -e .
 - Optional extras:
   - pip install 'etcher[redislite]'
   - pip install 'etcher[redis]'
 
-## Quick start (SQLite backend, default)
+## Quick start
+
 ```python
 from etcher import DB
 
-# Create or open a persistent DB file; "prefix" namespaces your app’s keys.
-db = DB("state.db", prefix="app", link_field="id")
+# Create or open a persistent DB file
+db = DB("state.db")
 
-# Store a dict (RD) and a list (RL)
+# Dump a JSON-like Python structure
 db["person"] = {"id": "123", "name": "Alice", "tags": ["a", "b"]}
-assert db["person"]()["name"] == "Alice"         # materialize to a Python dict
-assert db["person"]["tags"]() == ["a", "b"]      # RL materializes to a list
 
-# References are preserved (no deep copy): nested graphs stay linked
-ref = db["person"]
-db["task"] = {"owner": ref, "status": "waiting"}
-assert db["task"]["owner"]["name"] == "Alice"
-assert db["person"].refcount >= 2  # referenced by top-level 'person' and inside 'task'
+# Access fields naturally
+assert db["person"]["name"] == "Alice"
+assert db["person"]["tags"][0] == "a"
+
+# Materialize the whole object to a normal Python dict/list when you need it
+assert db["person"]() == {"id": "123", "name": "Alice", "tags": ["a", "b"]}
 ```
 
-Cycle-safe GC (garbage collector)
-- Etcher tracks links between objects and updates them automatically on set/del.
-- When the last external reference to a structure goes away, anything no longer reachable from the database root is cleaned up automatically — even if it contains cycles.
+### What are RD and RL?
+
+- RD is Etcher’s persistent dict container.
+- RL is Etcher’s persistent list container.
+- They behave like dict/list for field and index access, but values are stored persistently and nested structures are linked by reference.
+- The printed form is a safe summary and starts with '@' to signal “this is a persisted RD/RL object,” not a plain Python container. Use RD() or RL() to materialize plain Python dict/list values.
+
+### Printing RD/RL summaries
+
+- RD prints like `@{'field': value, ...}`
+- RL prints like `@[value, ...]`
+- We don’t print entire subtrees by default because structures can be cyclic (which would expand infinitely). The printed form is a safe summary that shows links by identity instead of expanding them.
+- If you want the full nested structure, use RD() or RL() to materialize it as a plain Python dict/list. See Materializing to plain Python (RD()/RL()) for details.
+- The '@' prefix exists so RD/RL reprs are not confused with normal dict/list reprs: it tells you “this value is persisted on disk.” Without it, RD/RL would look identical to standard Python containers even though they are persisted.
+- Star shorthand: If link_field is set and a child RD’s link value equals the dict key it’s under, the summary shows _ as shorthand for “same as the key.” Example: @{'alice': _}. This only affects printing.
+
+#### Printing example:
 
 ```python
-# Build a cycle
+db["person"] = {"id": "123", "name": "Alice"}
+db["task"] = {"owner": db["person"], "status": "waiting"}
+
+print(db["task"])
+# -> @{'owner': <UID-like token>, 'status': 'waiting'}  # internal identifier shown unquoted in the summary
+# The printed summary shows a compact identifier for nested RD/RL nodes instead of expanding them.
+```
+
+#### Printing example with link_field:
+
+- If your dicts include a field that identifies them (e.g., "id"), you can have summaries show that instead of the internal UID. This only affects printing (summaries), not storage.
+
+```python
+db = DB("state.db", link_field="id")
+db["person"] = {"id": "123", "name": "Alice"}
+db["task"] = {"owner": db["person"], "status": "waiting"}
+
+print(db["task"])
+# -> @{'owner': 123, 'status': 'waiting'}   # uses 'id' instead of the internal UID (rendered unquoted)
+```
+
+- IDs are treated like symbols in printed summaries. When link_field is set, the chosen field is shown unquoted (e.g., alice-42) for readability. This affects display only; storage and types are unchanged. Use RD() or RL() to materialize real Python values.
+
+## Materializing to plain Python (RD()/RL())
+
+- Call an RD or RL object (e.g., obj()) to materialize it into a plain Python dict or list. This is no longer an RD/RL object; it is a standard, in-memory Python datastructure.
+- This returns a snapshot: a normal, in‑memory native Python datastructure that is detached from the database. Later DB edits won’t update your materialized copy.
+- When printing data in the REPL, the '@' marker is used to distinguish between RD an RL persistent objects and normal dicts and lists.
+- When materializing, shared substructures and cycles are preserved. If two parents reference the same child, the materialized dicts/lists share the same Python object. Cycles materialize as self‑referential dicts/lists without infinite recursion.
+
+### Examples
+
+```python
+# Summaries vs materialized values
+print(db["person"])      # -> starts with '@', summary view
+p = db["person"]()       # materialize to plain dict
+print(p)                 # -> {'id': '123', ...} (no '@')
+
+# Edit offline and write back once (avoids repeated DB hits)
+p["name"] = "Bob"
+db["person"] = p
+```
+
+```python
+# Shared structure preserved
+db["x"] = {"child": {"n": 1}}
+child = db["x"]["child"]
+db["y"] = {"a": child, "b": child}
+
+y = db["y"]()
+assert y["a"] is y["b"]  # same Python object
+
+# Cycles preserved (no infinite recursion)
 db["a"] = {"name": "A"}
-db["b"] = {"name": "B", "ref_to_a": db["a"]}
-db["a"]["ref_to_b"] = db["b"]
+db["b"] = {"name": "B", "friend": db["a"]}
+db["a"]["friend"] = db["b"]
 
-# Remove top-level references; the cycle is no longer reachable and gets collected
-del db["a"]
-del db["b"]
-assert db() == {}  # root is empty; cycle was collected
+a = db["a"]()
+assert a["friend"]["friend"] is a  # cycle maintained
 ```
 
-Background worker pattern (two processes)
-- App process creates tasks and polls a status field.
-- Worker process marks tasks running/finished/failed.
+## Custom prefixes (namespaces)
+
+Etcher automatically picks and remembers a prefix for you; you don’t need to set it.
+
+If you want multiple independent namespaces in the same DB file, set your own:
 
 ```python
-# App process
-db["tasks"]["T1"] = {"status": "waiting", "result": None}
+db1 = DB("state.db", prefix="app1")
+db2 = DB("state.db", prefix="app2")
 
-# Worker process (separate process with its own DB(...) instance)
-db["tasks"]["T1"]["status"] = "running"
-# ... do work ...
-db["tasks"]["T1"]["result"] = {"ok": True}
-db["tasks"]["T1"]["status"] = "finished"
+db1["x"] = {"value": 1}
+db2["x"] = {"value": 2}
 
-# App polls
-while db["tasks"]["T1"]["status"] not in ("finished", "failed"):
-    pass  # sleep in real code
-result = db["tasks"]["T1"]["result"]
+assert db1["x"]["value"] == 1
+assert db2["x"]["value"] == 2
 ```
 
-Transactions (optional)
+## Transactions
+
+Use transactions for optimistic concurrency. You can either manage watch/multi/execute yourself or use the auto‑retry helper.
+
+Manual watch/multi/execute
+
 ```python
-# Only needed if you want optimistic concurrency with auto-retry
 t = db.transactor()
+t.watch()          # watch the current keyspace lock
+t.multi()          # begin a transaction
+t["numbers"] = [1, 2, 3, 4, 5, 6]  # queued changes
+t.execute()        # commit; raises WatchError if the keyspace changed
+```
+
+Auto‑retry helper
+
+```python
+t = db.transactor()
+
 def txn():
-    t.watch()
+    # Read current state through the transactor
+    xs = t["numbers"]() if "numbers" in t else []
     t.multi()
-    t["tasks"]["T1"]["status"] = "running"
-t.transact(txn)
+    t["numbers"] = xs + [7, 8]
+
+t.transact(txn)    # retries automatically on WatchError
+```
+
+## Sharing between processes
+
+- Two or more Python processes can open the same SQLite DB path and share state.
+- Many readers are fine; one writer at a time (keep write sections short).
+
+```python
+# Process A
+db = DB("state.db")
+db["counter"] = {"n": 0}
+
+# Process B
+db = DB("state.db")
+db["counter"]["n"] = db["counter"]["n"] + 1
 ```
 
 ## Backends
-- SQLite (default, recommended for “one app + worker” on one machine)
-  - WAL mode, synchronous=NORMAL, busy_timeout, mmap enabled for performance.
-  - Create with DB("state.db", prefix="app").
-- Embedded Redis via redislite (pip install 'etcher[redislite]')
+
+- Default: SQLite (fast, durable, zero external services).
+- Optional: redislite (embedded), or a real Redis server. Your RD/RL code stays the same; only the backend changes.
+
 ```python
+# redislite
 from redislite import Redis as RLRedis
-db = DB("redislite.rdb", prefix="app", redis_adapter=RLRedis)
-```
-- Real Redis server (pip install 'etcher[redis]')
-```python
+db = DB("redislite.rdb", redis_adapter=RLRedis)
+
+# real Redis
 import redis
 r = redis.Redis(host="localhost", port=6379)
-db = DB(prefix="app", redis=r)
+db = DB(redis=r)  # use a live Redis client
 ```
 
-## Performance notes
-- Optimized SQLite pragmas are enabled by default for interactive workloads.
-- Single writer at a time; readers are concurrent (WAL). Keep write sections short.
-- See docs/performance.md for tuning tips (busy_timeout, cache_size, batching).
+## Maintenance (SQLite)
 
-## Concurrency
-- Recommended: one writer at a time. SQLite WAL supports many readers with a single writer.
-- Multi-writer caveat: GC is best‑effort under concurrency. Simultaneous edits that add or remove links can delay cleanup.
-- If you use multiple writers:
-  - Group related writes in short transactions with DB.transactor().
-  - Consider a background "recheck and delete" pass for extra safety on long‑running jobs.
-- Without coordination, treat GC as best‑effort.
+- Optional housekeeping to compact or optimize the SQLite file.
+- Probably not needed for typical use; safe to ignore unless you care about reclaiming disk space.
+- Exposed as DB.maintenance() and awaitable DB.maintenance_async().
 
-## Limitations
-- Data model: JSON-style primitives only (strings, numbers, booleans, None, dicts, lists). No custom classes or objects; store data as plain dicts/lists.
-- Transactions and keyspace locking: transactions serialize writes for an entire Etcher keyspace (prefix). Within a prefix, only one writer can commit at a time. You can use multiple independent prefixes on the same Redis/SQLite backend to avoid cross-interference.
-- Concurrency: GC is best-effort under concurrent mutation. For heavy multi-writer workloads on the same prefix, keep transactions short or consider a networked Redis backend.
+```python
+db.maintenance()          # synchronous; no-op if backend doesn’t support it
 
-## Testing
-- Run tests:
-  - pytest -q
-- SQLite vs redislite parity tests:
-  - pytest tests/test_sqlitedis.py -q
+import asyncio
+asyncio.run(db.maintenance_async())  # async; also a no-op on non-SQLite backends
+```
 
-## License
-- MIT. See LICENSE.
+## Notes and limits
+
+- Data model: JSON-style primitives only (strings, numbers, booleans, None, dict, list).
+- Transactions: optimistic and optional; great when coordinating writers.
+- Prefixes: automatically handled; customize only if you want separate namespaces.
+- Repr safety: summaries avoid expanding cycles; call () to materialize when you need full data.
+- License: MIT (see LICENSE)

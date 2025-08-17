@@ -84,33 +84,32 @@ def decode(db, value, key=None):
 
 def evaluate(v):
     mapping = {}
-    
-    def walk(v):
-        if isa(v, RD):
-            if v.uid in mapping:
-                return mapping[v.uid]
-            # Create a pointer
-            mapping[v.uid] = {}
-            d = v.db.pipe.hgetall(v.uid)
-            d = {decode(v.db, k): walk(decode(v.db, x, k)) for k, x in d.items()}
-            # Fill the pointer with data
-            for k,val in d.items():
-                mapping[v.uid][k] = val
-            return d
-        elif isa(v, RL):
-            if v.uid in mapping:
-                return mapping[v.uid]
-            # Create a pointer
-            mapping[v.uid] = []
-            d = v.db.pipe.lrange(v.uid, 0, -1)
-            d = [walk(decode(v.db, x)) for x in d]
-            # Fill the pointer with data
-            mapping[v.uid].extend(d)
-            return d
-        return v
-    
-    v = walk(v)
-    return v
+
+    def walk(node):
+        if isa(node, RD):
+            uid = node.uid
+            if uid in mapping:
+                return mapping[uid]
+            out = {}
+            mapping[uid] = out
+            raw = node.db.pipe.hgetall(uid)
+            for k_b, v_b in raw.items():
+                k = decode(node.db, k_b)
+                out[k] = walk(decode(node.db, v_b, k))
+            return out
+        elif isa(node, RL):
+            uid = node.uid
+            if uid in mapping:
+                return mapping[uid]
+            out = []
+            mapping[uid] = out
+            raw = node.db.pipe.lrange(uid, 0, -1)
+            for x_b in raw:
+                out.append(walk(decode(node.db, x_b)))
+            return out
+        return node
+
+    return walk(v)
 
 
 def is_valid_ulid(value):
@@ -294,12 +293,13 @@ class DB:
             if new_prefix:
                 prefix = self.new_prefix()
             else:
-                # Load the last prefix used
-                prefix = self.pipe.get(':dbs:')
-                if prefix is None:
+                # Load last used prefix if available; otherwise create a new one
+                last = self.pipe.get(':last_prefix:')
+                if last is None:
                     prefix = self.new_prefix()
                 else:
-                    prefix = prefix.decode('utf8')
+                    last = last.decode('utf8')
+                    prefix = last if self.prefix_in_use(last) else self.new_prefix()
                 
             self.set_prefix(prefix)
         self.link_field = link_field
@@ -358,6 +358,14 @@ class DB:
         if all_keys_to_delete:
             # No need for type homogenization - redis-py handles mixed bytes/str
             deleted_count = self.rdb.delete(*all_keys_to_delete)
+
+        # Cleanup :last_prefix: if it pointed to this prefix and it's no longer in use
+        pfx_str = prefix[:-1] if prefix.endswith(':') else str(prefix)
+        lp = self.rdb.get(':last_prefix:')
+        if lp is not None:
+            lp_s = lp.decode('utf-8') if isinstance(lp, (bytes, bytearray)) else str(lp)
+            if lp_s == pfx_str and not self.prefix_in_use(pfx_str):
+                self.rdb.delete(':last_prefix:')
 
         return deleted_count > 0
 
@@ -434,6 +442,14 @@ class DB:
             deleted_count = self.rdb.delete(*keys_to_delete_batch)
             deleted_in_call += deleted_count
 
+        # Cleanup :last_prefix: if it pointed to this prefix and it's no longer in use
+        pfx_str = prefix[:-1] if prefix.endswith(':') else str(prefix)
+        lp = self.rdb.get(':last_prefix:')
+        if lp is not None:
+            lp_s = lp.decode('utf-8') if isinstance(lp, (bytes, bytearray)) else str(lp)
+            if lp_s == pfx_str and not self.prefix_in_use(pfx_str):
+                self.rdb.delete(':last_prefix:')
+
         return deleted_in_call > 0
 
     def shutdown(self):
@@ -442,6 +458,30 @@ class DB:
         except Exception:
             pass
 
+    def maintenance(self):
+        """
+        Optionally perform backend maintenance (SQLite cleanup, etc.).
+        No-op if the backend does not support maintenance.
+        """
+        fn = getattr(self.rdb, "maintenance", None)
+        if callable(fn):
+            return fn()
+
+    async def maintenance_async(self):
+        """
+        Coroutine that optionally performs backend maintenance.
+
+        If the backend exposes an async maintenance_async, it will be awaited.
+        If it exposes a synchronous callable, it will be called directly.
+        No-op if the backend does not support maintenance_async.
+        """
+        fn = getattr(self.rdb, "maintenance_async", None)
+        if callable(fn):
+            res = fn()
+            if hasattr(res, "__await__"):
+                return await res
+            return res
+
     def new_prefix(self):
         x = self.pipe.incr(':dbs:')
         return str(x)
@@ -449,25 +489,46 @@ class DB:
     def get_prefix(self):
         return str(self.pfx[:-1])
 
-    def set_prefix(self, prefix):
+    def prefix_in_use(self, prefix):
+        if not isinstance(prefix, str):
+            prefix = str(prefix)
+        if not prefix.endswith(':'):
+            prefix += ':'
+        root = f"{prefix}data:"
+        if self.rdb.exists(root):
+            return True
+        # Consider the backref anchor as evidence of an initialized prefix
+        if self.rdb.exists('back:' + root):
+            return True
+        it = self.rdb.scan_iter(match=f"{prefix}[DL]*", count=1)
+        try:
+            next(it)
+            return True
+        except StopIteration:
+            return False
+
+    def set_prefix(self, prefix, require_empty=False):
+        if require_empty and self.prefix_in_use(prefix):
+            raise ValueError(f"Prefix '{prefix}' is already in use")
         self.pfx = str(prefix) + ':'
         key = self.pfx + 'data:'
         if not self.pipe.exists(key):
             # Set up its backref
             self.pipe.hset('back:'+key, ':root:',1)
         self.data = RD(self, uid=key) 
+        self.pipe.set(':last_prefix:', str(prefix))
             
     # Counters
     def incr(self, key, x=None):
         key = self.pfx + key
-        if x:
-            self.pipe.incr(key, x)
+        if x is not None:
+            return self.pipe.incr(key, x)
         return self.pipe.incr(key)
 
     def decr(self, key, x=None):
         key = self.pfx + key
-        if x:
-            self.pipe.decr(key, x)
+        if x is not None:
+            return self.pipe.decr(key, x)
         return self.pipe.decr(key)
 
     def count(self, key):
@@ -477,8 +538,17 @@ class DB:
     def __getitem__(self, key):
         return self.data[key]
 
-    def get_via_uid(self,uid):
-        return self.data.get_via_uid(uid)
+    def get_via_uid(self, uid):
+        if isinstance(uid, (bytes, bytearray)):
+            uid_s = uid.decode('utf-8')
+        else:
+            uid_s = str(uid)
+        typ = db_key_type(uid_s)
+        if typ == 'D':
+            return RD(self, uid=uid_s)
+        if typ == 'L':
+            return RL(self, uid=uid_s)
+        raise KeyError(f'Key "{uid_s}" not found or not an RD/RL UID')
 
     def __setitem__(self, key, value):
         self.data[key] = value
@@ -555,7 +625,7 @@ class RD:
     '''
     redis dict
     '''
-    def __init__(self, db, data={}, uid=None):
+    def __init__(self, db, data=None, uid=None):
         self.db = db
         if uid is None:
             self.uid = self.db.pfx + 'D' + str(ULID())
@@ -577,9 +647,8 @@ class RD:
         r = self.db.pipe.hget(self.uid, key)
         return decode(self.db, r, key)
     
-    def get_via_uid(self,uid):
-        r = self.db.pipe.hgetall(uid)
-        return decode(self.db, r)
+    def get_via_uid(self, uid):
+        return self.db.get_via_uid(uid)
     
     def __setitem__(self, key, value):
         x = encode(self.db, value, self.uid)
@@ -605,7 +674,8 @@ class RD:
 
     def __call__(self):
         '''
-        Return self as a python dict.  Will throw error if recursive.
+        Materialize this RD as a plain Python dict. Preserves shared substructures and cycles
+        (object identity is maintained). Detached snapshot; further DB edits won't affect it.
         '''
         return evaluate(self)
 
@@ -674,7 +744,7 @@ class RL:
     '''
     redis list
     '''
-    def __init__(self, db, data=[], uid=None):
+    def __init__(self, db, data=None, uid=None):
         self.db = db
         if uid is None:
             self.uid = self.db.pfx + 'L' + str(ULID())
@@ -740,7 +810,8 @@ class RL:
 
     def __call__(self):
         '''
-        Return self as a python list.  Will throw error if recursive.
+        Materialize this RL as a plain Python list. Preserves shared substructures and cycles
+        (object identity is maintained). Detached snapshot; further DB edits won't affect it.
         '''
         return evaluate(self)
 

@@ -15,6 +15,7 @@ New tuning in this repo
 
 Tips to keep it fast
 - Batch edits: Use DB.transactor() to group multiple updates into one transaction (fewer commits = fewer fsyncs).
+- For many edits to a single object, materialize once (x = db["k"]()), modify in memory, then assign back once (db["k"] = x) to reduce DB churn.
 - Prefer structural reuse: When possible, reuse existing RD/RL nodes to avoid creating/deleting many small objects.
 - Avoid unnecessary materialization: Only call RD()/RL() when you truly need full Python structures; otherwise access fields/indices directly.
 - Keep transactions small: Many short transactions are usually better than one massive one.

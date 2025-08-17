@@ -10,7 +10,7 @@ readme = "README.md"
 authors = [
   { name="Chris Bates", email="1314008+chrsbats@users.noreply.github.com" },
 ]
-license = { file="LICENSE" }
+license = "MIT"
 requires-python = ">=3.9"
 dependencies = [
     "python-ulid>=3,<4"

@@ -9,11 +9,11 @@ Persistent Python dict/list containers that behave like plain JSON‑ish data. N
 
 ## Install
 
-- From this repo:
-  - pip install -e .
-- Optional extras:
-  - pip install 'etcher[redislite]'
-  - pip install 'etcher[redis]'
+`pip install etcher`
+
+Optional extras (for local and remote redis backends):
+  - `pip install etcher[redislite]`
+  - `pip install etcher[redis]`
 
 ## Quick start
 

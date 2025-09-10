@@ -2,7 +2,6 @@ from pathlib import Path
 path = Path(__file__).parent.resolve()
 from ulid import ULID
 import warnings
-import os
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="redislite")
 
 isa = isinstance
@@ -50,6 +49,12 @@ def encode(db, value, parent):
 
 def decode(db, value, key=None):
 
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode('utf-8')
+    # If it's already a native number or bool, return as-is
+    if isinstance(value, (int, float, bool)):
+        return value
+
     try:
         return int(value)
     except:
@@ -62,7 +67,8 @@ def decode(db, value, key=None):
                 else:
                     # Print the original key for debug purposes.
                     raise KeyError(f'Key "{key}" not found')
-            value = value.decode('utf-8')
+            # Ensure we’re working with a string for sentinel and UID handling
+            value = str(value)
 
     if value == '#N':
         return None
@@ -299,7 +305,7 @@ class DB:
                     prefix = self.new_prefix()
                 else:
                     last = last.decode('utf8')
-                    prefix = last if self.prefix_in_use(last) else self.new_prefix()
+                    prefix = last if self.prefix_in_use(last, include_anchor=True) else self.new_prefix()
                 
             self.set_prefix(prefix)
         self.link_field = link_field
@@ -322,52 +328,7 @@ class DB:
         """
         if not isinstance(prefix, str):
             prefix = str(prefix)
-        if not prefix.endswith(':'):
-            prefix += ':'
-
-        all_keys_to_delete = []
-        root_data_key = f"{prefix}data:"
-
-        # --- Find data keys using KEYS ---
-        data_pattern = f"{prefix}[DL]*"
-        data_keys = self.rdb.keys(data_pattern) # Blocking call!
-
-        # Determine expected type (usually bytes)
-        key_type_example = type(data_keys[0]) if data_keys else bytes
-        root_data_key_typed = root_data_key.encode('utf-8') if key_type_example is bytes else root_data_key
-
-        if self.rdb.exists(root_data_key):
-             if root_data_key_typed not in data_keys:
-                data_keys.append(root_data_key_typed)
-
-        for key in data_keys:
-            key_str = key.decode('utf-8') if isinstance(key, bytes) else key
-            if db_key_type(key_str) in ['D', 'L'] or key_str == root_data_key:
-                all_keys_to_delete.append(key) # Appends bytes or potentially the str root key
-
-        # --- Find backreference keys using KEYS ---
-        backref_pattern = f"back:{prefix}[DL]*"
-        backref_keys = self.rdb.keys(backref_pattern) # Blocking call!
-        for key in backref_keys:
-            original_key_ref = key[5:]
-            if db_key_type(original_key_ref) in ['D', 'L']:
-                all_keys_to_delete.append(key) # Appends bytes
-
-        # --- Perform deletion ---
-        deleted_count = 0
-        if all_keys_to_delete:
-            # No need for type homogenization - redis-py handles mixed bytes/str
-            deleted_count = self.rdb.delete(*all_keys_to_delete)
-
-        # Cleanup :last_prefix: if it pointed to this prefix and it's no longer in use
-        pfx_str = prefix[:-1] if prefix.endswith(':') else str(prefix)
-        lp = self.rdb.get(':last_prefix:')
-        if lp is not None:
-            lp_s = lp.decode('utf-8') if isinstance(lp, (bytes, bytearray)) else str(lp)
-            if lp_s == pfx_str and not self.prefix_in_use(pfx_str):
-                self.rdb.delete(':last_prefix:')
-
-        return deleted_count > 0
+        return self._delete_by_prefix(prefix, limit=None)
 
     def delete_prefix_batch(self, prefix, count=500):
         """
@@ -394,63 +355,9 @@ class DB:
         """
         if count is None:
             return self.delete_prefix_immediately(prefix)
-        
         if not isinstance(prefix, str):
             prefix = str(prefix)
-        if not prefix.endswith(':'):
-            prefix += ':'
-
-        deleted_in_call = 0
-        keys_to_delete_batch = []
-        root_data_key = f"{prefix}data:"
-
-        # --- Scan and collect data keys ---
-        data_pattern = f"{prefix}[DL]*"
-        found_data_keys = False
-        for key in self.rdb.scan_iter(match=data_pattern, count=count): # Iterates keys matching pattern
-            found_data_keys = True
-            key_str = key.decode('utf-8') if isinstance(key, bytes) else key
-            # *** TYPE CHECK 1: Ensure scanned key is D or L type ***
-            if db_key_type(key_str) in ['D', 'L']:
-                 keys_to_delete_batch.append(key)
-
-        # Determine expected type for root key handling
-        key_type_example = type(keys_to_delete_batch[0]) if keys_to_delete_batch else (type(key) if 'key' in locals() and found_data_keys else bytes) # Default to bytes
-        root_data_key_typed = root_data_key.encode('utf-8') if key_type_example is bytes else root_data_key
-
-        # *** EXPLICIT CHECK 2: Handle the root data key ***
-        if self.rdb.exists(root_data_key):
-             if root_data_key_typed not in keys_to_delete_batch:
-                 keys_to_delete_batch.append(root_data_key_typed)
-
-        # --- Delete collected data keys ---
-        if keys_to_delete_batch:
-            deleted_count = self.rdb.delete(*keys_to_delete_batch)
-            deleted_in_call += deleted_count
-            keys_to_delete_batch = [] # Reset
-
-        # --- Scan and collect backreference keys ---
-        backref_pattern = f"back:{prefix}[DL]*"
-        for key in self.rdb.scan_iter(match=backref_pattern, count=count): # Iterates backref keys matching pattern
-            original_key_ref = key[5:] # Get the key the backref points TO
-            # *** TYPE CHECK 3: Ensure backref points to a D or L key ***
-            if db_key_type(original_key_ref) in ['D', 'L']:
-                 keys_to_delete_batch.append(key) # Add the BACKREF key itself
-
-        # --- Delete collected backreference keys ---
-        if keys_to_delete_batch:
-            deleted_count = self.rdb.delete(*keys_to_delete_batch)
-            deleted_in_call += deleted_count
-
-        # Cleanup :last_prefix: if it pointed to this prefix and it's no longer in use
-        pfx_str = prefix[:-1] if prefix.endswith(':') else str(prefix)
-        lp = self.rdb.get(':last_prefix:')
-        if lp is not None:
-            lp_s = lp.decode('utf-8') if isinstance(lp, (bytes, bytearray)) else str(lp)
-            if lp_s == pfx_str and not self.prefix_in_use(pfx_str):
-                self.rdb.delete(':last_prefix:')
-
-        return deleted_in_call > 0
+        return self._delete_by_prefix(prefix, limit=int(count))
 
     def shutdown(self):
         try:
@@ -489,18 +396,74 @@ class DB:
     def get_prefix(self):
         return str(self.pfx[:-1])
 
-    def prefix_in_use(self, prefix):
+    def _norm_prefix(self, p):
+        p = str(p)
+        return p if p.endswith(':') else (p + ':')
+
+    def _root_key(self, p):
+        p = self._norm_prefix(p)
+        return f"{p}data:"
+
+    def _back_anchor(self, p):
+        return 'back:' + self._root_key(p)
+
+    def _ensure_root_initialized(self, prefix):
+        # Ensure the root backref anchor exists and the root hash has a meta type
+        back = self._back_anchor(prefix)
+        if not self.pipe.hexists(back, ':root:'):
+            self.pipe.hset(back, ':root:', 1)
+        self.pipe.hset(self._root_key(prefix), mapping={})
+
+    def _collect_keys(self, patterns, limit):
+        ks = []
+        if limit is None:
+            for patt in patterns:
+                ks.extend(self.rdb.keys(patt))
+        else:
+            for patt in patterns:
+                for k in self.rdb.scan_iter(match=patt, count=limit):
+                    ks.append(k)
+                    if len(ks) >= limit:
+                        return ks
+        return ks
+
+    def _post_delete_housekeeping(self, pfx_str):
+        # Clean :last_prefix: if it points to pfx_str and that prefix is no longer in use (ignoring anchor)
+        lp = self.rdb.get(':last_prefix:')
+        if lp is not None:
+            lp_s = lp.decode('utf-8') if isinstance(lp, (bytes, bytearray)) else str(lp)
+            if lp_s == pfx_str and not self.prefix_in_use(pfx_str):
+                self.rdb.delete(':last_prefix:')
+        # Recreate anchor for current prefix only
+        if pfx_str == self.get_prefix():
+            self.rdb.hset(self._back_anchor(pfx_str), ':root:', 1)
+
+    def _delete_by_prefix(self, prefix, limit):
+        p = self._norm_prefix(prefix)
+        patterns = [f"{p}*", f"back:{p}*"]
+        keys_to_delete = self._collect_keys(patterns, limit)
+        if keys_to_delete:
+            self.rdb.delete(*keys_to_delete)
+            # In immediate mode (limit=None), finalize now if everything is gone
+            if limit is None:
+                if not self._collect_keys(patterns, limit=1):
+                    self._post_delete_housekeeping(p[:-1])  # without trailing ':'
+            return True
+        # Nothing to delete this pass: finalize and report done
+        self._post_delete_housekeeping(p[:-1])  # without trailing ':'
+        return False
+
+    def prefix_in_use(self, prefix, include_anchor=False):
         if not isinstance(prefix, str):
             prefix = str(prefix)
-        if not prefix.endswith(':'):
-            prefix += ':'
-        root = f"{prefix}data:"
+        p = self._norm_prefix(prefix)
+        root = self._root_key(prefix)
         if self.rdb.exists(root):
             return True
-        # Consider the backref anchor as evidence of an initialized prefix
-        if self.rdb.exists('back:' + root):
-            return True
-        it = self.rdb.scan_iter(match=f"{prefix}[DL]*", count=1)
+        if include_anchor:
+            if self.rdb.exists(self._back_anchor(prefix)) or self.rdb.exists('back:' + self._norm_prefix(prefix)):
+                return True
+        it = self.rdb.scan_iter(match=f"{p}[DL]*", count=1)
         try:
             next(it)
             return True
@@ -510,12 +473,9 @@ class DB:
     def set_prefix(self, prefix, require_empty=False):
         if require_empty and self.prefix_in_use(prefix):
             raise ValueError(f"Prefix '{prefix}' is already in use")
-        self.pfx = str(prefix) + ':'
-        key = self.pfx + 'data:'
-        if not self.pipe.exists(key):
-            # Set up its backref
-            self.pipe.hset('back:'+key, ':root:',1)
-        self.data = RD(self, uid=key) 
+        self.pfx = self._norm_prefix(prefix)
+        self._ensure_root_initialized(prefix)
+        self.data = RD(self, uid=self._root_key(prefix))
         self.pipe.set(':last_prefix:', str(prefix))
             
     # Counters
@@ -533,7 +493,8 @@ class DB:
 
     def count(self, key):
         key = self.pfx + key
-        return decode(self,self.pipe.get(key))
+        v = self.pipe.get(key)
+        return int(v.decode('utf-8')) if v is not None else 0
 
     def __getitem__(self, key):
         return self.data[key]
@@ -568,6 +529,9 @@ class DB:
     def values(self):
         return self.data.values()
 
+    def items(self):
+        return self.data.items()
+
     def __iter__(self):
         yield from self.data
 
@@ -597,18 +561,19 @@ class DB:
 
     def transact(self, transaction_function):
         if self.transact_mode:
-            while True:
-                try:
-                    self.watch()
-                    transaction_function()
-                    self.execute()
-                    break
-                except WatchError:
-                    continue
-            self.pipe.reset()
+            try:
+                while True:
+                    try:
+                        self.watch()
+                        transaction_function()
+                        self.execute()
+                        break
+                    except WatchError:
+                        continue
+            finally:
+                self.pipe.reset()
         else:
-            raise Exception(
-                'Attempted transaction while not in trasaction mode')
+            raise Exception('Attempted transaction while not in trasaction mode')
 
     def flush(self):
         for k in self.data:
@@ -636,7 +601,8 @@ class RD:
 
     @property
     def refcount(self):
-        return int(self.db.pipe.hlen('back:'+self.uid))
+        # Number of distinct parents that reference this UID.
+        return self.db.pipe.hlen('back:' + self.uid)
 
     
     @property
@@ -755,20 +721,19 @@ class RL:
 
     @property
     def refcount(self):
-        return self.db.pipe.hlen('back:'+self.uid)
+        # Number of distinct parents that reference this UID.
+        return self.db.pipe.hlen('back:' + self.uid)
     
     @property
     def backrefs(self):
-        return self.db.pipe.hgetall('back:'+self.uid)    
+        return {k.decode('utf-8'): int(v) for k, v in self.db.pipe.hgetall('back:'+self.uid).items()}
     
     def __getitem__(self, key):
 
         if isa(key, slice):
-            start = key.start
-            stop = key.stop
-            if start is None: start = 0
-            if stop is None: stop = 0
-            r = self.db.pipe.lrange(self.uid, start, stop - 1)
+            start = 0 if key.start is None else key.start
+            stop_inclusive = -1 if key.stop is None else (key.stop - 1)
+            r = self.db.pipe.lrange(self.uid, start, stop_inclusive)
             # If we create RL instance here, it will create an orphan
             r = [decode(self.db, x) for x in r]
             return r

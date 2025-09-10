@@ -1,5 +1,11 @@
 # Etcher
 
+[![PyPI](https://img.shields.io/pypi/v/etcher.svg)](https://pypi.org/project/etcher/)
+[![Python](https://img.shields.io/pypi/pyversions/etcher.svg)](https://pypi.org/project/etcher/)
+[![Build](https://github.com/chrsbats/etcher/actions/workflows/ci.yml/badge.svg)](https://github.com/chrsbats/etcher/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/coverage-90%25%2B-brightgreen)](https://github.com/chrsbats/etcher/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Persistent Python dict/list containers that behave like plain JSON‑ish data. No server, no schema. Put your structures in; read them back.
 
 - Store JSON-style Python data: strings, numbers, booleans, None, dict, list
@@ -12,8 +18,9 @@ Persistent Python dict/list containers that behave like plain JSON‑ish data. N
 `pip install etcher`
 
 Optional extras (for local and remote redis backends):
-  - `pip install etcher[redislite]`
-  - `pip install etcher[redis]`
+
+- `pip install etcher[redislite]`
+- `pip install etcher[redis]`
 
 ## Quick start
 
@@ -48,7 +55,7 @@ assert db["person"]() == {"id": "123", "name": "Alice", "tags": ["a", "b"]}
 - We don’t print entire subtrees by default because structures can be cyclic (which would expand infinitely). The printed form is a safe summary that shows links by identity instead of expanding them.
 - If you want the full nested structure, use RD() or RL() to materialize it as a plain Python dict/list. See Materializing to plain Python (RD()/RL()) for details.
 - The '@' prefix exists so RD/RL reprs are not confused with normal dict/list reprs: it tells you “this value is persisted on disk.” Without it, RD/RL would look identical to standard Python containers even though they are persisted.
-- Star shorthand: If link_field is set and a child RD’s link value equals the dict key it’s under, the summary shows _ as shorthand for “same as the key.” Example: @{'alice': _}. This only affects printing.
+- Star shorthand: If link_field is set and a child RD’s link value equals the dict key it’s under, the summary shows * as shorthand for “same as the key.” Example: `@{'alice': *}`. This only affects printing.
 
 #### Printing example:
 

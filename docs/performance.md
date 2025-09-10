@@ -32,3 +32,5 @@ Configuration knobs (advanced)
 - synchronous=OFF (not recommended for most uses): faster, reduced crash durability.
 - Busy timeout: increased to 5s to reduce “database is locked” errors during short lock contention.
 - Cache size: consider PRAGMA cache_size=-20000 (approx 20MB) if your workload benefits from more page cache.
+Reference counting semantics:
+RD.refcount and RL.refcount report the number of distinct parent objects referencing an item. This is implemented as HLEN on back:<uid>. The hash values are per-parent counters to handle duplicate references (e.g., a list containing the same child multiple times). When a counter reaches zero it is deleted, so HLEN accurately reflects the number of parents.

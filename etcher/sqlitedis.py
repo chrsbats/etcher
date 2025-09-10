@@ -352,9 +352,21 @@ class Redis:
         else:
             patt = str(patt)
         with self._lock:
-            cur = self._conn.execute("SELECT k FROM meta")
-            keys = [row[0] for row in cur.fetchall()]
-        return [k.encode("utf-8") for k in keys if fnmatch(k, patt)]
+            keys: List[str] = []
+            cur = self._conn.execute("SELECT k FROM kv")
+            keys.extend(row[0] for row in cur.fetchall())
+            cur = self._conn.execute("SELECT DISTINCT hk FROM hkv")
+            keys.extend(row[0] for row in cur.fetchall())
+            cur = self._conn.execute("SELECT DISTINCT lk FROM lkv")
+            keys.extend(row[0] for row in cur.fetchall())
+        # remove duplicates and apply pattern
+        uniq = []
+        seen = set()
+        for k in keys:
+            if k not in seen and fnmatch(k, patt):
+                uniq.append(k)
+                seen.add(k)
+        return [k.encode("utf-8") for k in uniq]
 
     def scan_iter(self, match: Optional[KeyT] = None, count: Optional[int] = None) -> Iterator[Bytes]:
         patt = match if match is not None else "*"
@@ -524,8 +536,8 @@ class Pipeline:
                         mutated.add(_s(lk))
                     elif op == "lset":
                         lk, idx, v = args
-                        cur.execute("UPDATE lkv SET v = ? WHERE lk = ? AND idx = ?", (_b(v), _s(lk), idx))
-                        if cur.rowcount == 0:
+                        c = cur.execute("UPDATE lkv SET v = ? WHERE lk = ? AND idx = ?", (_b(v), _s(lk), idx))
+                        if c.rowcount == 0:
                             raise IndexError("index out of range")
                         mutated.add(_s(lk))
                     elif op == "hincrby":

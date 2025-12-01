@@ -619,6 +619,45 @@ class RD:
         except KeyError:
             return default
         
+    def update(self, other=None, **kwargs):
+        if other is not None:
+            items = other.items() if hasattr(other, "items") else other
+            for k, v in items:
+                self[k] = v
+        for k, v in kwargs.items():
+            self[k] = v
+
+    def setdefault(self, key, default=None):
+        if key in self:
+            return self[key]
+        self[key] = default
+        return self[key]
+
+    def pop(self, key, default=...):
+        if key in self:
+            val = self[key]
+            del self[key]
+            return val
+        if default is ...:
+            raise KeyError(key)
+        return default
+
+    def popitem(self):
+        ks = self.keys()
+        if not ks:
+            raise KeyError("popitem(): dictionary is empty")
+        k = ks[-1]
+        v = self[k]
+        del self[k]
+        return (k, v)
+
+    def clear(self):
+        for k in list(self.keys()):
+            del self[k]
+
+    def copy(self):
+        return dict(self.items())
+
     def get_via_uid(self, uid):
         return self.db.get_via_uid(uid)
     

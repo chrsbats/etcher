@@ -499,6 +499,12 @@ class DB:
     def __getitem__(self, key):
         return self.data[key]
 
+    def get(self, key, default=None):
+        try:
+            return self[key]          
+        except KeyError:
+            return default
+
     def get_via_uid(self, uid):
         if isinstance(uid, (bytes, bytearray)):
             uid_s = uid.decode('utf-8')
@@ -531,6 +537,30 @@ class DB:
 
     def items(self):
         return self.data.items()
+
+    def update(self, other=None, **kwargs):
+        return self.data.update(other, **kwargs)
+
+    def setdefault(self, key, default=None):
+        return self.data.setdefault(key, default)
+
+    def pop(self, key, default=...):
+        return self.data.pop(key, default)
+
+    def popitem(self):
+        return self.data.popitem()
+
+    def clear(self):
+        return self.data.clear()
+
+    def copy(self):
+        return self.data.copy()
+
+    def __len__(self):
+        return len(self.data)
+
+    def __bool__(self):
+        return bool(self.data)
 
     def __iter__(self):
         yield from self.data

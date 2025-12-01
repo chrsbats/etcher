@@ -613,6 +613,12 @@ class RD:
         r = self.db.pipe.hget(self.uid, key)
         return decode(self.db, r, key)
     
+    def get(self, key, default=None):
+        try:
+            return self[key]          
+        except KeyError:
+            return default
+        
     def get_via_uid(self, uid):
         return self.db.get_via_uid(uid)
     

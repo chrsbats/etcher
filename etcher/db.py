@@ -803,6 +803,119 @@ class RL:
         for v in values:
             self.db.pipe.rpush(self.uid, v)
 
+    # --- list API additions ---
+    def _rewrite(self, values):
+        """
+        Replace the entire list contents with 'values' (a Python iterable),
+        reusing encode/extend to maintain refcounts. Ensures old children are
+        properly de-referenced using existing APIs.
+        """
+        # Decrement refs for existing raw children
+        raw = self.db.pipe.lrange(self.uid, 0, -1)
+        for rv in raw:
+            decr_ref(self.db, rv, self.uid)
+        # Delete the list key and type metadata
+        self.db.pipe.delete(self.uid)
+        # Rebuild with new values
+        if values:
+            self.extend(values)
+
+    def remove(self, x):
+        """Remove first occurrence of value."""
+        vals = list(self)
+        for i, v in enumerate(vals):
+            if v == x:
+                self.pop(i)
+                return
+        raise ValueError("list.remove(x): x not in list")
+
+    def pop(self, i=-1):
+        """Remove and return item at index (default last)."""
+        n = len(self)
+        if n == 0:
+            raise IndexError("pop from empty list")
+        if i < 0:
+            i += n
+        if i < 0 or i >= n:
+            raise IndexError("pop index out of range")
+        vals = list(self)
+        val = vals.pop(i)
+        self._rewrite(vals)
+        return val
+
+    def insert(self, i, x):
+        """Insert object before index."""
+        vals = list(self)
+        n = len(vals)
+        if i < 0:
+            i += n
+        if i < 0:
+            i = 0
+        if i > n:
+            i = n
+        vals.insert(i, x)
+        self._rewrite(vals)
+
+    def clear(self):
+        """Remove all items from the list."""
+        self._rewrite([])
+
+    def index(self, x, start=0, end=None):
+        """Return first index of value."""
+        vals = list(self)
+        n = len(vals)
+        if end is None:
+            end = n
+        # normalize negatives like Python slicing
+        if start < 0:
+            start += n
+        if end < 0:
+            end += n
+        start = max(start, 0)
+        end = min(end, n)
+        for idx in range(start, end):
+            if vals[idx] == x:
+                return idx
+        raise ValueError(f"{x} is not in list")
+
+    def count(self, x):
+        """Return number of occurrences of value."""
+        cnt = 0
+        for v in self:
+            if v == x:
+                cnt += 1
+        return cnt
+
+    def reverse(self):
+        """Reverse the list in place."""
+        vals = list(self)
+        vals.reverse()
+        self._rewrite(vals)
+
+    def sort(self, *, key=None, reverse=False):
+        """Stable sort."""
+        vals = list(self)
+        vals.sort(key=key, reverse=reverse)
+        self._rewrite(vals)
+
+    def copy(self):
+        """Return a shallow copy as a plain Python list."""
+        return list(self)
+
+    def __delitem__(self, key):
+        """Support deletion by index or slice."""
+        if isinstance(key, slice):
+            vals = list(self)
+            del vals[key]
+            self._rewrite(vals)
+        else:
+            self.pop(key)
+
+    def __iadd__(self, other):
+        """In-place add: extend from iterable and return self."""
+        self.extend(other)
+        return self
+
     def __bool__(self):
         if len(self) > 0:
             return True

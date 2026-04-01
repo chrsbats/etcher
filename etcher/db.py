@@ -1,38 +1,40 @@
 from pathlib import Path
+
 path = Path(__file__).parent.resolve()
+from collections.abc import Mapping, MutableMapping, MutableSequence, Sequence
 from ulid import ULID
 import warnings
+
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="redislite")
 
 isa = isinstance
-   
+
 from .exceptions import WatchError
 
-sym = '@'
+sym = "@"
 
 from pprint import pformat
 
 
 def encode(db, value, parent):
-    
     if value is None:
-        return '#N'
+        return "#N"
     if value is True:
-        return '#T'
+        return "#T"
     if value is False:
-        return '#F'
-    
-    if isinstance(value, (RL, RD)): 
+        return "#F"
+
+    if isinstance(value, (RL, RD)):
         obj_uid = value.uid
         add_ref(db, obj_uid, parent)
         return obj_uid
-    
+
     if isa(value, list):
         new_list = RL(db)
         new_list.extend(value)
         add_ref(db, new_list.uid, parent)
         return new_list.uid
-    
+
     if isa(value, dict):
         new_dict = RD(db)
         encoded_values = {k: encode(db, v, new_dict.uid) for k, v in value.items()}
@@ -40,17 +42,16 @@ def encode(db, value, parent):
             db.pipe.hset(new_dict.uid, mapping=encoded_values)
         add_ref(db, new_dict.uid, parent)
         return new_dict.uid
-    
+
     if isa(value, str):
-        return '$' + value
-    
+        return "$" + value
+
     return value
 
 
 def decode(db, value, key=None):
-
     if isinstance(value, (bytes, bytearray)):
-        value = value.decode('utf-8')
+        value = value.decode("utf-8")
     # If it's already a native number or bool, return as-is
     if isinstance(value, (int, float, bool)):
         return value
@@ -70,20 +71,20 @@ def decode(db, value, key=None):
             # Ensure we’re working with a string for sentinel and UID handling
             value = str(value)
 
-    if value == '#N':
+    if value == "#N":
         return None
-    if value == '#T':
+    if value == "#T":
         return True
-    if value == '#F':
+    if value == "#F":
         return False
 
-    if value.startswith('$'):
+    if value.startswith("$"):
         return value[1:]
-    
+
     dbk = db_key_type(value)
-    if dbk == 'D':
+    if dbk == "D":
         return RD(db, uid=value)
-    if dbk == 'L':
+    if dbk == "L":
         return RL(db, uid=value)
     return value
 
@@ -128,36 +129,37 @@ def is_valid_ulid(value):
 
 def db_key_type(value):
     if isa(value, bytes):
-        value = value.decode('utf-8')
+        value = value.decode("utf-8")
     if isa(value, str):
         if not value:
-            return ''
+            return ""
         # Strip prefix
-        value = value.split(':')[1:]
-        value = ':'.join(value)
+        value = value.split(":")[1:]
+        value = ":".join(value)
         # Look for datastruct
-        if value and value[0] in ['D', 'L']:
+        if value and value[0] in ["D", "L"]:
             if is_valid_ulid(str(value[1:])):
                 return value[0]
-    return ''
+    return ""
+
 
 def find_refs(db, key):
     if isa(key, bytes):
-        key = key.decode('utf-8')
+        key = key.decode("utf-8")
     dbk = db_key_type(key)
-    if dbk == 'D':   
+    if dbk == "D":
         return db.pipe.hvals(key)
-    if dbk == 'L':
+    if dbk == "L":
         return db.pipe.lrange(key, 0, -1)
     return []
 
 
-def check_ref(db,ref,root=':root:',visited=None):
-    '''
+def check_ref(db, ref, root=":root:", visited=None):
+    """
     Do depth first traversal on the backreferences to see if we can reach the root.
     If we can't reach the root, we've been orphaned, which means we can get deleted.
     Note - we only need to do this if theres multiple references to the same object.
-    '''
+    """
 
     if visited is None:
         visited = set()
@@ -165,66 +167,63 @@ def check_ref(db,ref,root=':root:',visited=None):
         return False
     visited.add(ref)
 
-    backrefs = db.pipe.hkeys('back:'+ref)
-    backrefs = [k.decode('utf-8') for k in backrefs]
-    # TODO: there's a potential optimization here for large graphs, but it requires storing by depth of the backrefs, 
+    backrefs = db.pipe.hkeys("back:" + ref)
+    backrefs = [k.decode("utf-8") for k in backrefs]
+    # TODO: there's a potential optimization here for large graphs, but it requires storing by depth of the backrefs,
     # which might not be worth it in practice.
-    #backrefs = sort_refs_by_depth(backrefs)
+    # backrefs = sort_refs_by_depth(backrefs)
     for backref in backrefs:
         if backref == root:
             return True
-        if check_ref(db,backref,root,visited.copy()):
+        if check_ref(db, backref, root, visited.copy()):
             return True
     return False
 
 
-
 def decr_ref(db, key, parent):
     # Check if the encoded value represents an RD or RL object UID
-    if isa(key,bytes):
-        key = key.decode('utf-8')
-    
-    if not db_key_type(key):
-        return # Not a reference counted object
+    if isa(key, bytes):
+        key = key.decode("utf-8")
 
-    if isa(parent,bytes):
-        parent = parent.decode('utf-8')
-    
-    backref_key = 'back:' + key
+    if not db_key_type(key):
+        return  # Not a reference counted object
+
+    if isa(parent, bytes):
+        parent = parent.decode("utf-8")
+
+    backref_key = "back:" + key
     new_count = db.pipe.hincrby(backref_key, parent, -1)
 
     if new_count <= 0:
         if new_count < 0:
-            print('WARNING: A reference count is less than zero')
-        db.pipe.hdel(backref_key, parent) 
-        is_reachable = check_ref(db, key)                       
+            print("WARNING: A reference count is less than zero")
+        db.pipe.hdel(backref_key, parent)
+        is_reachable = check_ref(db, key)
         if not is_reachable:
-        
             if not db.pipe.exists(key):
-                return # Already processed/deleted in this GC cycle
-            
-            child_references = find_refs(db, key) 
+                return  # Already processed/deleted in this GC cycle
 
-            db.pipe.delete(key,backref_key)             
-            
+            child_references = find_refs(db, key)
+
+            db.pipe.delete(key, backref_key)
+
             for child in child_references:
                 decr_ref(db, child, key)
 
 
-
-
 def add_ref(db, key, parent):
-    '''
+    """
     Link a key to the object that references it (the backref).
-    We use a counter here in case the parent has multiple links to the same object, 
+    We use a counter here in case the parent has multiple links to the same object,
     such as x = [y,y,y,y]
-    '''
+    """
     if db_key_type(key):
-        db.pipe.hincrby('back:'+key,parent,1)
+        db.pipe.hincrby("back:" + key, parent, 1)
 
 
 from copy import copy
 from collections import defaultdict
+
 
 def list_db(db):
     db = db.pipe
@@ -233,21 +232,23 @@ def list_db(db):
     for key in keys:
         type = db.type(key)
         if type == b"string":
-            vals = db.get(key).decode('utf-8')
+            vals = db.get(key).decode("utf-8")
         if type == b"hash":
             vals = db.hgetall(key)
-            vals = {k.decode('utf-8'):v.decode('utf-8') for k,v in vals.items()}
+            vals = {k.decode("utf-8"): v.decode("utf-8") for k, v in vals.items()}
         if type == b"zset":
             vals = db.zrange(key, 0, -1)
         if type == b"list":
             vals = db.lrange(key, 0, -1)
-            vals = [x.decode('utf-8') for x in vals]
+            vals = [x.decode("utf-8") for x in vals]
         if type == b"set":
             vals = db.smembers(key)
-        data[key.decode('utf-8')] = vals
+        data[key.decode("utf-8")] = vals
     return data
 
-import threading 
+
+import threading
+
 
 class DBConnections:
     def __init__(self):
@@ -258,6 +259,7 @@ class DBConnections:
         fname = str(fname)
         if adapter_cls is None:
             from etcher.sqlitedis import Redis as DefaultRedis
+
             adapter_cls = DefaultRedis
         key = (adapter_cls, fname)
         with self.lock:
@@ -271,13 +273,23 @@ class DBConnections:
                 self.connections[key] = inst
             return inst
 
+
 db_connections = DBConnections()
 
 
 class DB:
-    def __init__(self, db_path=None, prefix=None, link_field='', new_prefix=False, redis=None, redis_adapter=None, redis_kwargs=None):
+    def __init__(
+        self,
+        db_path=None,
+        prefix=None,
+        link_field="",
+        new_prefix=False,
+        redis=None,
+        redis_adapter=None,
+        redis_kwargs=None,
+    ):
         if db_path is None:
-            db_path = path / 'redis.db'
+            db_path = path / "redis.db"
         self.path = db_path
 
         # Resolve backend: explicit instance > adapter class > env var > default (redislite)
@@ -287,9 +299,11 @@ class DB:
             adapter_cls = redis_adapter
             if adapter_cls is None:
                 from etcher.sqlitedis import Redis
-                adapter_cls = Redis
-            self.rdb = db_connections.connect(str(db_path), adapter_cls=adapter_cls, **(redis_kwargs or {}))
 
+                adapter_cls = Redis
+            self.rdb = db_connections.connect(
+                str(db_path), adapter_cls=adapter_cls, **(redis_kwargs or {})
+            )
 
         self.pipe = self.rdb
         self.data = None
@@ -300,22 +314,25 @@ class DB:
                 prefix = self.new_prefix()
             else:
                 # Load last used prefix if available; otherwise create a new one
-                last = self.pipe.get(':last_prefix:')
+                last = self.pipe.get(":last_prefix:")
                 if last is None:
                     prefix = self.new_prefix()
                 else:
-                    last = last.decode('utf8')
-                    prefix = last if self.prefix_in_use(last, include_anchor=True) else self.new_prefix()
-                
+                    last = last.decode("utf8")
+                    prefix = (
+                        last
+                        if self.prefix_in_use(last, include_anchor=True)
+                        else self.new_prefix()
+                    )
+
             self.set_prefix(prefix)
         self.link_field = link_field
         self.transact_mode = False  # For future checks
 
-
     @property
     def refcount(self):
         return self.data.refcount
-    
+
     @property
     def backrefs(self):
         return self.data.backrefs
@@ -390,7 +407,7 @@ class DB:
             return res
 
     def new_prefix(self):
-        x = self.pipe.incr(':dbs:')
+        x = self.pipe.incr(":dbs:")
         return str(x)
 
     def get_prefix(self):
@@ -398,20 +415,20 @@ class DB:
 
     def _norm_prefix(self, p):
         p = str(p)
-        return p if p.endswith(':') else (p + ':')
+        return p if p.endswith(":") else (p + ":")
 
     def _root_key(self, p):
         p = self._norm_prefix(p)
         return f"{p}data:"
 
     def _back_anchor(self, p):
-        return 'back:' + self._root_key(p)
+        return "back:" + self._root_key(p)
 
     def _ensure_root_initialized(self, prefix):
         # Ensure the root backref anchor exists and the root hash has a meta type
         back = self._back_anchor(prefix)
-        if not self.pipe.hexists(back, ':root:'):
-            self.pipe.hset(back, ':root:', 1)
+        if not self.pipe.hexists(back, ":root:"):
+            self.pipe.hset(back, ":root:", 1)
         self.pipe.hset(self._root_key(prefix), mapping={})
 
     def _collect_keys(self, patterns, limit):
@@ -429,14 +446,14 @@ class DB:
 
     def _post_delete_housekeeping(self, pfx_str):
         # Clean :last_prefix: if it points to pfx_str and that prefix is no longer in use (ignoring anchor)
-        lp = self.rdb.get(':last_prefix:')
+        lp = self.rdb.get(":last_prefix:")
         if lp is not None:
-            lp_s = lp.decode('utf-8') if isinstance(lp, (bytes, bytearray)) else str(lp)
+            lp_s = lp.decode("utf-8") if isinstance(lp, (bytes, bytearray)) else str(lp)
             if lp_s == pfx_str and not self.prefix_in_use(pfx_str):
-                self.rdb.delete(':last_prefix:')
+                self.rdb.delete(":last_prefix:")
         # Recreate anchor for current prefix only
         if pfx_str == self.get_prefix():
-            self.rdb.hset(self._back_anchor(pfx_str), ':root:', 1)
+            self.rdb.hset(self._back_anchor(pfx_str), ":root:", 1)
 
     def _delete_by_prefix(self, prefix, limit):
         p = self._norm_prefix(prefix)
@@ -461,7 +478,9 @@ class DB:
         if self.rdb.exists(root):
             return True
         if include_anchor:
-            if self.rdb.exists(self._back_anchor(prefix)) or self.rdb.exists('back:' + self._norm_prefix(prefix)):
+            if self.rdb.exists(self._back_anchor(prefix)) or self.rdb.exists(
+                "back:" + self._norm_prefix(prefix)
+            ):
                 return True
         it = self.rdb.scan_iter(match=f"{p}[DL]*", count=1)
         try:
@@ -476,8 +495,8 @@ class DB:
         self.pfx = self._norm_prefix(prefix)
         self._ensure_root_initialized(prefix)
         self.data = RD(self, uid=self._root_key(prefix))
-        self.pipe.set(':last_prefix:', str(prefix))
-            
+        self.pipe.set(":last_prefix:", str(prefix))
+
     # Counters
     def incr(self, key, x=None):
         key = self.pfx + key
@@ -494,26 +513,26 @@ class DB:
     def count(self, key):
         key = self.pfx + key
         v = self.pipe.get(key)
-        return int(v.decode('utf-8')) if v is not None else 0
+        return int(v.decode("utf-8")) if v is not None else 0
 
     def __getitem__(self, key):
         return self.data[key]
 
     def get(self, key, default=None):
         try:
-            return self[key]          
+            return self[key]
         except KeyError:
             return default
 
     def get_via_uid(self, uid):
         if isinstance(uid, (bytes, bytearray)):
-            uid_s = uid.decode('utf-8')
+            uid_s = uid.decode("utf-8")
         else:
             uid_s = str(uid)
         typ = db_key_type(uid_s)
-        if typ == 'D':
+        if typ == "D":
             return RD(self, uid=uid_s)
-        if typ == 'L':
+        if typ == "L":
             return RL(self, uid=uid_s)
         raise KeyError(f'Key "{uid_s}" not found or not an RD/RL UID')
 
@@ -574,20 +593,20 @@ class DB:
         return db
 
     def watch(self):
-        self.pipe.watch(self.pfx + '_lock_')
+        self.pipe.watch(self.pfx + "_lock_")
 
     def multi(self):
         if self.transact_mode:
             self.pipe.multi()
         else:
-            raise Exception('Attempted multi while not in trasaction mode')
+            raise Exception("Attempted multi while not in trasaction mode")
 
     def execute(self):
         if self.transact_mode:
-            self.pipe.set(self.pfx + '_lock_', str(ULID()))
+            self.pipe.set(self.pfx + "_lock_", str(ULID()))
             self.pipe.execute()
         else:
-            raise Exception('Attempted execute while not in trasaction mode')
+            raise Exception("Attempted execute while not in trasaction mode")
 
     def transact(self, transaction_function):
         if self.transact_mode:
@@ -603,12 +622,12 @@ class DB:
             finally:
                 self.pipe.reset()
         else:
-            raise Exception('Attempted transaction while not in trasaction mode')
+            raise Exception("Attempted transaction while not in trasaction mode")
 
     def flush(self):
         for k in self.data:
             del self.data[k]
- 
+
     def __repr__(self):
         return self.data.__repr__()
 
@@ -616,14 +635,15 @@ class DB:
         return self.__repr__()
 
 
-class RD:
-    '''
+class RD(MutableMapping):
+    """
     redis dict
-    '''
+    """
+
     def __init__(self, db, data=None, uid=None):
         self.db = db
         if uid is None:
-            self.uid = self.db.pfx + 'D' + str(ULID())
+            self.uid = self.db.pfx + "D" + str(ULID())
         else:
             self.uid = uid
         if data:
@@ -632,23 +652,25 @@ class RD:
     @property
     def refcount(self):
         # Number of distinct parents that reference this UID.
-        return self.db.pipe.hlen('back:' + self.uid)
+        return self.db.pipe.hlen("back:" + self.uid)
 
-    
     @property
     def backrefs(self):
-        return {k.decode('utf-8'): int(v) for k,v in self.db.pipe.hgetall('back:'+self.uid).items()}
+        return {
+            k.decode("utf-8"): int(v)
+            for k, v in self.db.pipe.hgetall("back:" + self.uid).items()
+        }
 
     def __getitem__(self, key):
         r = self.db.pipe.hget(self.uid, key)
         return decode(self.db, r, key)
-    
+
     def get(self, key, default=None):
         try:
-            return self[key]          
+            return self[key]
         except KeyError:
             return default
-        
+
     def update(self, other=None, **kwargs):
         if other is not None:
             items = other.items() if hasattr(other, "items") else other
@@ -690,7 +712,7 @@ class RD:
 
     def get_via_uid(self, uid):
         return self.db.get_via_uid(uid)
-    
+
     def __setitem__(self, key, value):
         x = encode(self.db, value, self.uid)
         if key in self:
@@ -701,7 +723,7 @@ class RD:
         value = self.db.pipe.hget(self.uid, key)
         decr_ref(self.db, value, self.uid)
         self.db.pipe.hdel(self.uid, key)
-        
+
     def __contains__(self, key):
         return bool(self.db.pipe.hexists(self.uid, key))
 
@@ -714,10 +736,10 @@ class RD:
         return False
 
     def __call__(self):
-        '''
+        """
         Materialize this RD as a plain Python dict. Preserves shared substructures and cycles
         (object identity is maintained). Detached snapshot; further DB edits won't affect it.
-        '''
+        """
         return evaluate(self)
 
     def keys(self):
@@ -752,9 +774,9 @@ class RD:
 
                 if repr_format:
                     if link != k:
-                        data = '##' + str(link) + '##'
+                        data = "##" + str(link) + "##"
                     else:
-                        data = '####'
+                        data = "####"
                 else:
                     data = str(link)
                 if data is None:
@@ -767,28 +789,28 @@ class RD:
     def __repr__(self):
         summary = self._summarize()
         rep = pformat(summary, sort_dicts=False, indent=2, width=120)
-        rep = rep.replace("'####'", '*')
-        rep = rep.replace("'##", '').replace("##'", '')
+        rep = rep.replace("'####'", "*")
+        rep = rep.replace("'##", "").replace("##'", "")
         return sym + rep
 
     def __str__(self):
         return self.__repr__()
 
     def __eq__(self, other):
-        if isinstance(other, RD):
-            return self.uid == other.uid  # Compare by identity (UID)
-        elif isinstance(other, dict):
-            return self() == other  # Compare by content
+        if isinstance(other, Mapping):
+            return dict(self.items()) == dict(other.items())
         return NotImplemented
 
-class RL:
-    '''
+
+class RL(MutableSequence):
+    """
     redis list
-    '''
+    """
+
     def __init__(self, db, data=None, uid=None):
         self.db = db
         if uid is None:
-            self.uid = self.db.pfx + 'L' + str(ULID())
+            self.uid = self.db.pfx + "L" + str(ULID())
         else:
             self.uid = uid
         if data:
@@ -797,26 +819,27 @@ class RL:
     @property
     def refcount(self):
         # Number of distinct parents that reference this UID.
-        return self.db.pipe.hlen('back:' + self.uid)
-    
+        return self.db.pipe.hlen("back:" + self.uid)
+
     @property
     def backrefs(self):
-        return {k.decode('utf-8'): int(v) for k, v in self.db.pipe.hgetall('back:'+self.uid).items()}
-    
-    def __getitem__(self, key):
+        return {
+            k.decode("utf-8"): int(v)
+            for k, v in self.db.pipe.hgetall("back:" + self.uid).items()
+        }
 
+    def __getitem__(self, key):
         if isa(key, slice):
-            start = 0 if key.start is None else key.start
-            stop_inclusive = -1 if key.stop is None else (key.stop - 1)
-            r = self.db.pipe.lrange(self.uid, start, stop_inclusive)
-            # If we create RL instance here, it will create an orphan
-            r = [decode(self.db, x) for x in r]
-            return r
+            return list(self)[key]
         r = self.db.pipe.lindex(self.uid, key)
         return decode(self.db, r)
 
-
     def __setitem__(self, key, value):
+        if isinstance(key, slice):
+            vals = list(self)
+            vals[key] = value
+            self._rewrite(vals)
+            return
         x = encode(self.db, value, self.uid)
         decr_ref(self.db, self.db.pipe.lindex(self.uid, key), self.uid)
         self.db.pipe.lset(self.uid, key, x)
@@ -962,10 +985,10 @@ class RL:
         yield from r
 
     def __call__(self):
-        '''
+        """
         Materialize this RL as a plain Python list. Preserves shared substructures and cycles
         (object identity is maintained). Detached snapshot; further DB edits won't affect it.
-        '''
+        """
         return evaluate(self)
 
     def __contains__(self, key):
@@ -987,8 +1010,8 @@ class RL:
         return self.__repr__()
 
     def __eq__(self, other):
-        if isinstance(other, RL):
-            return self.uid == other.uid  # Compare by identity (UID)
-        elif isinstance(other, list):
-            return self() == other  # Compare by content
+        if isinstance(other, Sequence) and not isinstance(
+            other, (str, bytes, bytearray)
+        ):
+            return list(self) == list(other)
         return NotImplemented

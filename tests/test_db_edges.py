@@ -59,21 +59,21 @@ class TestDBEdges(unittest.TestCase):
         self.assertEqual(l[-2:], [1])
         self.assertEqual(l[1:3], [])
 
-        # RD equality by content and identity
+        # RD equality is content-based like dict
         d2 = self.db["d"]
         self.assertTrue(d == d2)  # same uid
         self.assertTrue(d == {"a": 1})  # by materialized content
         self.db["d2"] = {"a": 1}
         self.assertTrue(self.db["d2"] == {"a": 1})
-        self.assertFalse(self.db["d2"] == d)  # different uid
+        self.assertTrue(self.db["d2"] == d)  # different uid, same content
 
-        # RL equality by content and identity
+        # RL equality is content-based like list
         l2 = self.db["l"]
         self.assertTrue(l == l2)  # same uid
         self.assertTrue(l == [1])  # by materialized content
         self.db["l2"] = [1]
         self.assertTrue(self.db["l2"] == [1])
-        self.assertFalse(self.db["l2"] == l)  # different uid
+        self.assertTrue(self.db["l2"] == l)  # different uid, same content
 
     def test_transact_guards_and_flow(self):
         # Guard rails: calling multi/execute without transactor

@@ -46,7 +46,14 @@ assert db["person"]() == {"id": "123", "name": "Alice", "tags": ["a", "b"]}
 - RD is Etcher’s persistent dict container.
 - RL is Etcher’s persistent list container.
 - They behave like dict/list for field and index access, but values are stored persistently and nested structures are linked by reference.
+- They aim to match normal Python mapping/sequence behavior closely: `RD == {...}` and `RL == [...]` compare by contents, while object identity still uses `is` and persisted identity is available via `.uid`.
 - The printed form is a safe summary and starts with '@' to signal “this is a persisted RD/RL object,” not a plain Python container. Use RD() or RL() to materialize plain Python dict/list values.
+
+### Python interop
+
+- `RD` behaves like a mutable mapping and `RL` behaves like a mutable sequence.
+- Equality follows normal Python container semantics: `==` compares contents.
+- Use `is` for Python object identity and `.uid` when you need to compare persisted object identity.
 
 ### Printing RD/RL summaries
 

@@ -192,6 +192,9 @@ def decr_ref(db, key, parent):
         parent = parent.decode("utf-8")
 
     backref_key = "back:" + key
+    if not db.pipe.hexists(backref_key, parent):
+        return
+
     new_count = db.pipe.hincrby(backref_key, parent, -1)
 
     if new_count <= 0:

@@ -2,8 +2,9 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from etcher.db import DB
+from etcher.db import DB, RD, RL
 
 
 class TestRLListAPI(unittest.TestCase):
@@ -100,3 +101,59 @@ class TestRLListAPI(unittest.TestCase):
         # __delitem__ by slice
         del lst[1:3]
         self.assertEqual(lst(), [3, 5])
+
+    def test_contains_nested_and_wrapper_values(self):
+        shared = RD(self.db)
+        shared["x"] = 1
+        lst = RL(self.db)
+        lst.extend([{"a": 1}, [1, 2], shared, 3])
+
+        self.assertIn({"a": 1}, lst)
+        self.assertIn([1, 2], lst)
+        self.assertIn(shared, lst)
+        self.assertIn(3, lst)
+        self.assertNotIn({"a": 2}, lst)
+        self.assertNotIn([2, 1], lst)
+        self.assertNotIn(4, lst)
+        self.assertNotIn((1, 2), lst)
+
+    def test_contains_empty_list(self):
+        self.assertNotIn(1, RL(self.db))
+
+    def test_contains_scalar_list_uses_one_read_call(self):
+        lst = RL(self.db)
+        lst.extend([1, 2, 3])
+
+        with patch.object(
+            self.db.pipe, "lrange", wraps=self.db.pipe.lrange
+        ) as lrange, patch.object(
+            self.db.pipe, "hgetall", wraps=self.db.pipe.hgetall
+        ) as hgetall:
+            self.assertIn(2, lst)
+
+        self.assertEqual(lrange.call_count, 1)
+        self.assertEqual(hgetall.call_count, 0)
+
+    def test_contains_stops_before_loading_later_nested_values(self):
+        lst = RL(self.db)
+        lst.extend([1, {"a": {"b": 1}}, 3])
+
+        with patch.object(
+            self.db.pipe, "hgetall", wraps=self.db.pipe.hgetall
+        ) as hgetall:
+            self.assertIn(1, lst)
+
+        self.assertEqual(hgetall.call_count, 0)
+
+    def test_contains_fetches_shared_nested_value_once(self):
+        shared = RD(self.db)
+        shared["x"] = 1
+        lst = RL(self.db)
+        lst.extend([shared, shared, 3])
+
+        with patch.object(
+            self.db.pipe, "hgetall", wraps=self.db.pipe.hgetall
+        ) as hgetall:
+            self.assertIn(3, lst)
+
+        self.assertEqual(hgetall.call_count, 1)

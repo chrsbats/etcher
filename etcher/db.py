@@ -89,8 +89,9 @@ def decode(db, value, key=None):
     return value
 
 
-def evaluate(v):
-    mapping = {}
+def evaluate(v, mapping=None):
+    if mapping is None:
+        mapping = {}
 
     def walk(node):
         if isa(node, RD):
@@ -995,9 +996,12 @@ class RL(MutableSequence):
         return evaluate(self)
 
     def __contains__(self, key):
-        # Serializes self and then calls __contain__ on the list
-        if key in self():
-            return True
+        # Materializes lazily, reusing one memo so shared substructures are
+        # fetched at most once, and stops at the first match.
+        mapping = {}
+        for raw in self.db.pipe.lrange(self.uid, 0, -1):
+            if evaluate(decode(self.db, raw), mapping) == key:
+                return True
         return False
 
     def _summary(self):

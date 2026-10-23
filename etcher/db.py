@@ -1,5 +1,8 @@
 from pathlib import Path
 
+from .sqlitedis import Redis as SQLiteRedis
+from .transaction import Transaction
+
 path = Path(__file__).parent.resolve()
 from collections.abc import Mapping, MutableMapping, MutableSequence, Sequence
 from ulid import ULID
@@ -429,11 +432,13 @@ class DB:
         return "back:" + self._root_key(p)
 
     def _ensure_root_initialized(self, prefix):
-        # Ensure the root backref anchor exists and the root hash has a meta type
+        # Ensure the root backref anchor exists.
         back = self._back_anchor(prefix)
         if not self.pipe.hexists(back, ":root:"):
             self.pipe.hset(back, ":root:", 1)
-        self.pipe.hset(self._root_key(prefix), mapping={})
+        # Redis has no empty hashes; only SQLite needs empty-root metadata.
+        if isinstance(self.rdb, SQLiteRedis):
+            self.pipe.hset(self._root_key(prefix), mapping={})
 
     def _collect_keys(self, patterns, limit):
         ks = []
@@ -589,10 +594,9 @@ class DB:
         yield from self.data
 
     def transactor(self):
-        # Create copy of self but set db to a new pipe.
         db = copy(self)
-        pipe = db.rdb.pipeline()
-        db.pipe = pipe
+        db.pipe = Transaction(db.rdb)
+        db.data = RD(db, uid=self.data.uid)
         db.transact_mode = True
         return db
 
@@ -622,6 +626,7 @@ class DB:
                         self.execute()
                         break
                     except WatchError:
+                        self.pipe.reset()
                         continue
             finally:
                 self.pipe.reset()
@@ -863,19 +868,18 @@ class RL(MutableSequence):
     # --- list API additions ---
     def _rewrite(self, values):
         """
-        Replace the entire list contents with 'values' (a Python iterable),
-        reusing encode/extend to maintain refcounts. Ensures old children are
-        properly de-referenced using existing APIs.
+        Replace the list contents, preserving references to reused children.
         """
-        # Decrement refs for existing raw children
+        # Retain reused children before releasing their old references.
+        values = [encode(self.db, value, self.uid) for value in values]
         raw = self.db.pipe.lrange(self.uid, 0, -1)
         for rv in raw:
             decr_ref(self.db, rv, self.uid)
         # Delete the list key and type metadata
         self.db.pipe.delete(self.uid)
         # Rebuild with new values
-        if values:
-            self.extend(values)
+        for value in values:
+            self.db.pipe.rpush(self.uid, value)
 
     def remove(self, x):
         """Remove first occurrence of value."""

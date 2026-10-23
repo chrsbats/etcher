@@ -147,7 +147,9 @@ assert db2["x"]["value"] == 2
 
 ## Transactions
 
-Use transactions for optimistic concurrency. You can either manage watch/multi/execute yourself or use the auto‑retry helper.
+Transactions use Redis-style `WATCH`/`MULTI`/`EXEC` for optimistic concurrency
+between cooperating transactors. You can either manage watch/multi/execute
+yourself or use the auto-retry helper. Read inputs before calling `multi()`.
 
 Manual watch/multi/execute
 
@@ -156,7 +158,7 @@ t = db.transactor()
 t.watch()          # watch the current keyspace lock
 t.multi()          # begin a transaction
 t["numbers"] = [1, 2, 3, 4, 5, 6]  # queued changes
-t.execute()        # commit; raises WatchError if the keyspace changed
+t.execute()        # execute; raises WatchError if another transactor committed
 ```
 
 Auto‑retry helper
@@ -172,6 +174,28 @@ def txn():
 
 t.transact(txn)    # retries automatically on WatchError
 ```
+
+After `multi()`, container writes and their reference bookkeeping, including
+orphan cleanup, are queued until `execute()`. Abandoning an unexecuted batch
+leaves committed data and reference metadata unchanged. `transact()` discards
+the queue when its callback raises and retries on `WatchError`.
+
+`watch()` monitors the namespace lock updated by transactor execution. Ordinary
+writes outside this protocol do not update that lock. Transactions do not promise
+SQL-style transactional reads or read-your-writes semantics.
+
+Redis/redislite execution follows native `MULTI`/`EXEC` semantics: a command error
+during execution does not roll back other commands. Once execution is submitted,
+an error or lost acknowledgement can mean changes were applied or the outcome is
+unknown. Only failures known to occur before execution guarantee an unchanged
+store. SQLite may provide stronger native rollback, but that is not a portable
+Etcher guarantee. See the [Redis transaction documentation](https://redis.io/docs/latest/develop/using-commands/transactions/).
+
+### 0.2.3 transaction fix
+
+Fixed premature container and reference-bookkeeping writes in transactions,
+including SQLite pipeline deletions. The public transaction model remains
+Redis-style `WATCH`/`MULTI`/`EXEC`.
 
 ## Sharing between processes
 

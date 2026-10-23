@@ -489,14 +489,20 @@ class Pipeline:
         self._in_multi = True
 
     def execute(self):
+        try:
+            return self._execute()
+        finally:
+            self.reset()
+
+    def _execute(self):
         with self._lock, self._r._lock:
-            # check watched
-            for k, ver in self._watched.items():
-                if self._r._get_version(k) != ver:
-                    self.reset()
-                    raise WatchError("Watched key changed")
-            # apply queued ops atomically
             with self._r._conn:
+                # Reserve the write lock before checking versions, including
+                # writers using other SQLite connections or processes.
+                self._r._conn.execute("BEGIN IMMEDIATE")
+                for k, ver in self._watched.items():
+                    if self._r._get_version(k) != ver:
+                        raise WatchError("Watched key changed")
                 mutated: set[str] = set()
                 cur = self._r._conn
                 for op, args, meta in self._queue:
@@ -551,12 +557,13 @@ class Pipeline:
                             (_s(hk), _b(f), _b(new))
                         )
                         mutated.add(_s(hk))
+                    elif op == "delete":
+                        self._r._delete_keys([_s(key) for key in args], cur)
                     else:
                         raise NotImplementedError(op)
                 # bump versions at the end
                 for k in mutated:
                     self._r._bump_version(k, cur)
-            self.reset()
 
     def reset(self):
         self._queue.clear()
@@ -629,6 +636,12 @@ class Pipeline:
     def llen(self, key: KeyT): return self._r.llen(key)
     def keys(self, pattern: Optional[str] = None): return self._r.keys(pattern)
     def scan_iter(self, match: Optional[str] = None, count: Optional[int] = None): return self._r.scan_iter(match, count)
-    def delete(self, *keys: KeyT): return self._r.delete(*keys)
+
+    def delete(self, *keys: KeyT):
+        if self._in_multi:
+            self._queue.append(("delete", keys, {}))
+            return 0
+        return self._r.delete(*keys)
+
     def type(self, key: KeyT): return self._r.type(key)
     def exists(self, key: KeyT): return self._r.exists(key)

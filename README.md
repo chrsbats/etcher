@@ -191,12 +191,6 @@ unknown. Only failures known to occur before execution guarantee an unchanged
 store. SQLite may provide stronger native rollback, but that is not a portable
 Etcher guarantee. See the [Redis transaction documentation](https://redis.io/docs/latest/develop/using-commands/transactions/).
 
-### 0.2.3 transaction fix
-
-Fixed premature container and reference-bookkeeping writes in transactions,
-including SQLite pipeline deletions. The public transaction model remains
-Redis-style `WATCH`/`MULTI`/`EXEC`.
-
 ## Sharing between processes
 
 - Two or more Python processes can open the same SQLite DB path and share state.

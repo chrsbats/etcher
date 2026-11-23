@@ -13,6 +13,8 @@ Persistent Python dict/list containers that behave like plain JSON‑ish data. N
 - Durable on-disk storage (SQLite by default)
 - Use an optional Redis compatible backend without changing your code
 
+**Etcher is designed for local database access. Remote backends are supported, but fine-grained data structure operations are sensitive to network latency.**
+
 ## Install
 
 `pip install etcher`

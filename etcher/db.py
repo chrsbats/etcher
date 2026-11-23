@@ -280,6 +280,13 @@ class DBConnections:
                 self.connections[key] = inst
             return inst
 
+    def disconnect(self, inst):
+        with self.lock:
+            for key, cached in list(self.connections.items()):
+                if cached is inst:
+                    del self.connections[key]
+            inst.shutdown()
+
 
 db_connections = DBConnections()
 
@@ -385,7 +392,7 @@ class DB:
 
     def shutdown(self):
         try:
-            self.pipe.shutdown()
+            db_connections.disconnect(self.pipe)
         except Exception:
             pass
 

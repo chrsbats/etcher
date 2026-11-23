@@ -224,6 +224,29 @@ r = redis.Redis(host="localhost", port=6379)
 db = DB(redis=r)  # use a live Redis client
 ```
 
+## Closing and reopening (SQLite)
+
+Call `db.shutdown()` when finished with a SQLite backend. A new `DB(path)` can
+reopen the same file in the same process and read the saved data, using the
+remembered prefix by default.
+
+```python
+db = DB("state.db")
+db["saved"] = "preserved"
+db.shutdown()
+
+reopened = DB("state.db")
+try:
+    assert reopened["saved"] == "preserved"
+finally:
+    reopened.shutdown()
+```
+
+Within one process, DB objects opened with the same path and adapter share a live
+backend. Calling `shutdown()` closes that shared backend and removes it from the
+connection cache. Existing DB objects and RD/RL handles using it are no longer
+usable; construct a new `DB` to reopen the file.
+
 ## Maintenance (SQLite)
 
 - Optional housekeeping to compact or optimize the SQLite file.

@@ -51,3 +51,36 @@ class TestLastPrefix(unittest.TestCase):
         db2 = DB(self.db_path)
         self.assertIs(db2.rdb, db1.rdb)  # same underlying connection in-process
         self.assertEqual(db2.get_prefix(), "custom")
+
+    def test_reopen_after_shutdown_preserves_data_and_prefix(self):
+        first = DB(self.db_path)
+        try:
+            first["saved"] = "preserved"
+            prefix = first.get_prefix()
+        finally:
+            first.shutdown()
+
+        second = DB(self.db_path)
+        try:
+            self.assertIsNot(second.rdb, first.rdb)
+            self.assertEqual(second["saved"], "preserved")
+            self.assertEqual(second.get_prefix(), prefix)
+        finally:
+            second.shutdown()
+
+    def test_old_shutdown_does_not_evict_reopened_backend(self):
+        first = DB(self.db_path)
+        first.shutdown()
+
+        second = DB(self.db_path)
+        try:
+            first.shutdown()
+            third = DB(self.db_path)
+            try:
+                self.assertIs(third.rdb, second.rdb)
+                second["saved"] = "preserved"
+                self.assertEqual(third["saved"], "preserved")
+            finally:
+                third.shutdown()
+        finally:
+            second.shutdown()

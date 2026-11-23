@@ -6,9 +6,9 @@
 [![Coverage](https://img.shields.io/badge/coverage-90%25%2B-brightgreen)](https://github.com/chrsbats/etcher/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Etcher gives Python persistent dicts and lists for JSON-style data. With SQLite,
-your code runs locally and your data lives in a file that multiple processes can
-open. No schema or separate database server is required.
+Persistent Python dicts and lists for JSON-style data that behave like ordinary Python data structures. No schema, no separate database server, no explicit loading or saving.
+
+Etcher is designed for local database access, particularly for applications and background workers that need to share persistent state.
 
 ## Install
 
